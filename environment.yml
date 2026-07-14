@@ -1,0 +1,17 @@
+name: simple_paleobathymetry
+channels:
+  - conda-forge
+dependencies:
+  - python>=3.9
+  - pygplates
+  - gplately
+  - plate-model-manager
+  - gmt>=6
+  - numpy
+  - scipy
+  - xarray
+  - netcdf4
+  - pandas
+  - joblib
+  - pyyaml
+  - pip

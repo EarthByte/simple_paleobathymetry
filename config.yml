@@ -1,0 +1,128 @@
+# =============================================================================
+# simple_paleobathymetry - example configuration
+# =============================================================================
+# Run with:  python run_paleobathymetry.py config.yml
+#
+# This example reproduces the default ("traditional") workflow:
+#   * plate model     : Zahirovic2022 (loaded via the GPlately Plate Model Manager)
+#   * proximity target: COB line segments (distance to passive continental margins)
+#   * obstacles       : coastlines (shortest-path distance around continents)
+#   * no continent contouring, no LIPs, no seamounts
+# =============================================================================
+
+
+# ---- Plate model ------------------------------------------------------------
+plate_model:
+  # Option A (default): fetch a model from the GPlately Plate Model Manager (PMM).
+  #   Set use_pmm: true and choose `name`.
+  # Option B: use your own local plate-model files.
+  #   Set use_pmm: false and fill in the `local:` block below.
+  use_pmm: true
+  name: zahirovic2022            # default plate model
+  data_dir: plate_model          # where PMM caches files (or where local files live)
+  anchor_plate_id: 0
+
+  local:                         # only used when use_pmm: false
+    rotation_files: []           #   e.g. [model/rotations.rot]
+    topology_files: []           #   e.g. [model/topologies.gpml]
+    coastline_files: []          #   used as continent obstacles (optional)
+    cob_features: []             #   COB line segments = passive-margin proximity target
+
+
+# ---- Time range (Ma) --------------------------------------------------------
+time:
+  min: 0
+  max: 170
+  step: 1
+  # Do not reconstruct ocean points older than this many Ma.
+  # null = limited only by the age grid; when using PMM it defaults to the
+  # plate model's oldest reconstruction time.
+  max_reconstruction_time: null
+
+
+# ---- Passive-margin proximity source ---------------------------------------
+proximity:
+  # DEFAULT (false): measure distance to COB *line segments* from the plate model.
+  # true: use dynamically contoured passive margins instead (you must first run
+  #       the EarthByte continent-contouring workflow and point to its outputs).
+  use_continent_contouring: false
+  continent_contouring:
+    passive_margin_features: null      # -> proximity target
+    continent_contour_features: null   # -> continent obstacle
+
+  # true  : shortest-path distance that routes AROUND continents (water flow).
+  # false : straight-line great-circle distance to the passive margins.
+  use_continent_obstacles: true
+
+  # Plate-boundary feature types that also act as obstacles (leave as default).
+  plate_boundary_obstacles: [MidOceanRidge, SubductionZone]
+
+  # Clamp the mean distance to passive margins (km). null = no clamp.
+  clamp_mean_distance_km: 3000
+
+
+# ---- Grid spacing (degrees) -------------------------------------------------
+grids:
+  internal_spacing: 0.5   # spacing used for the internal distance computation (coarser = faster)
+  output_spacing: 0.1     # spacing of all final output grids
+
+
+# ---- Age grids --------------------------------------------------------------
+age_grids:
+  # pmm   : use the age grids that ship with the PMM plate model (requires use_pmm: true).
+  # local : provide a filename template below (use {time} for the age in Ma).
+  source: pmm
+  local_template: null    # e.g. "agegrids/seafloor_age_{time:.0f}Ma.nc"
+
+
+# ---- Age -> basement depth (thermal subsidence) model -----------------------
+# STEP 1 turns each seafloor-age grid into "depth to basement" (the seafloor
+# depth BEFORE sediment is added). Choose one of four published subsidence
+# models. See the README ("Step 1") for the equations and references.
+#
+#   gdh1            Stein & Stein (1992)          GDH1 plate-cooling model (default)
+#   rhcw18          Richards et al. (2018)        tabulated plate-cooling model
+#   parsons_sclater Parsons & Sclater (1977)      analytic model
+#   crosby09        Crosby et al. (2009)          analytic model
+age_depth:
+  model: gdh1
+  # Lookup table used ONLY by the 'rhcw18' model. It ships inside this repo, so
+  # the workflow is fully standalone; you should not need to change this path.
+  richards_table: data/RHCW18_age_depth.dat
+
+
+# ---- Sediment-thickness relationship (Dutkiewicz et al., 2017) --------------
+# These are the trained polynomial + standardisation constants relating
+# log(sediment thickness) to seafloor age and distance to passive margins.
+# Replace them if you retrain the relationship for a different present-day
+# age grid / sediment-thickness dataset.
+sediment_thickness:
+  max_age: 191.87276
+  mean_age: 61.18406823
+  mean_distance: 1835.28118479
+  variance_age: 1934.6999014
+  variance_distance: 1207521.8995806
+  max_distance: 3000
+  polynomial_coefficients:
+    [5.441401190368497, 0.46893096, -0.07320928, -0.24077496, -0.10840657,
+     0.00381672, 0.06831728, 0.01179914, 0.01158149, -0.39880562]
+
+
+# ---- Optional features (off by default = traditional workflow) -------------
+features:
+  use_lips: false
+  use_seamounts: false
+
+
+# ---- Runtime ----------------------------------------------------------------
+run:
+  # Location of the public EarthByte predicting-sediment-thickness package
+  # (provides ocean_basin_proximity.py and predict_sediment_thickness.py).
+  predicting_sediment_thickness_dir: submodules/predicting-sediment-thickness
+  output_dir: output
+  num_cpus: 4
+  steps:                  # turn individual steps on/off (useful for re-runs)
+    age_to_depth: true
+    distance_grids: true
+    sediment_thickness: true
+    paleobathymetry: true
