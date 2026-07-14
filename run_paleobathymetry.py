@@ -363,6 +363,50 @@ def _resolve_proximity_and_obstacles(cfg, model):
     return proximity_files, obstacle_files, pbo
 
 
+def _report_cob_geometry_types(proximity_files):
+    """Log the geometry types of the resolved COB proximity features (info only).
+
+    The distance-to-margin computation measures the distance from each ocean
+    point to the *continent-ocean boundary*. That target may be supplied either
+    as COB line segments (polylines) or as continental COB polygons -- both are
+    valid: for a polygon the distance is measured to its boundary, i.e. the COB
+    line. This routine just reports which type was loaded so the run log is
+    self-documenting; it never warns or fails. Any error is swallowed.
+    """
+    try:
+        import pygplates
+
+        n_polyline = n_polygon = n_other = 0
+        for path in proximity_files:
+            try:
+                feature_collection = pygplates.FeatureCollection(path)
+            except Exception:
+                continue
+            for feature in feature_collection:
+                try:
+                    geometries = feature.get_geometries()
+                except Exception:
+                    try:
+                        geometries = feature.get_all_geometries()
+                    except Exception:
+                        geometries = []
+                for geometry in geometries:
+                    if isinstance(geometry, pygplates.PolygonOnSphere):
+                        n_polygon += 1
+                    elif isinstance(geometry, pygplates.PolylineOnSphere):
+                        n_polyline += 1
+                    else:
+                        n_other += 1
+
+        if n_polyline or n_polygon or n_other:
+            log("  COB proximity geometries: {} polyline(s), {} polygon(s), "
+                "{} other -- distance is measured to the continent-ocean "
+                "boundary either way.".format(n_polyline, n_polygon, n_other))
+    except Exception:
+        # Purely informational; never interrupt the workflow.
+        pass
+
+
 def step_distance_grids(cfg, model, times, out_dir):
     log("STEP 2: generating distance-to-passive-margin grids ...")
     os.makedirs(out_dir, exist_ok=True)
@@ -380,6 +424,8 @@ def step_distance_grids(cfg, model, times, out_dir):
     proximity_files, obstacle_files, pbo = _resolve_proximity_and_obstacles(cfg, model)
     log("  proximity target: {}".format(proximity_files))
     log("  continent obstacles: {}".format(obstacle_files))
+    if not cfg["proximity"].get("use_continent_contouring", False):
+        _report_cob_geometry_types(proximity_files)
 
     input_points = generate_input_points_grid(internal)[0]
 

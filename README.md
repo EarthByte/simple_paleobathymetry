@@ -90,7 +90,7 @@ python run_paleobathymetry.py config.yml
 
 The shipped `config.yml` runs the default configuration end to end: the
 **Zahirovic2022** plate model (fetched automatically), the **GDH1** age-depth
-model, distances measured to **COB line segments**, and Dutkiewicz et al. (2017)
+model, distances measured to the model's **continental COBs**, and Dutkiewicz et al. (2017)
 sediment thickness — no large igneous provinces or seamounts. Edit `config.yml`
 to change any of this; every option is explained inline in that file and in the
 [configuration reference](#configuration-reference) below.
@@ -156,8 +156,8 @@ level).
 ### Step 2 — Distance to passive continental margins
 
 **Input:** the plate model (rotations + topologies), the seafloor-age grids, and
-a set of *passive-margin* line features (by default the plate model's
-continent-ocean boundary line segments).
+a set of *passive-margin* features (by default the plate model's continent-ocean
+boundaries — COB line segments or COB polygons).
 **Output:** `output/Distances/mean_distance_<spacing>d_<t>.nc` — for each ocean
 cell, its **mean distance (km) to the nearest passive continental margin,
 averaged over the lifetime of that piece of ocean floor**.
@@ -205,14 +205,21 @@ calibrated range, so distances are **clamped to a maximum of 3000 km**
 extrapolation, so the clamp both keeps the input in range and reflects that
 "very far from any margin" saturates to a thin, pelagic sediment cover.
 
-**What defines a "passive margin"?** By default the workflow uses the plate
-model's **continent-ocean boundary (COB) line segments** as the margin target.
-Alternatively, you can supply dynamically **contoured** passive margins produced
-by the separate EarthByte
+**What defines a "passive margin"?** By default the workflow measures distance to
+the plate model's **continent-ocean boundaries (COBs)** — the *same* continental
+COBs used to build the seafloor-age grids. These may be supplied either as COB
+line segments (polylines) or as continental COB polygons; **both work**, because
+for a polygon the distance is measured to its boundary, which is the COB line
+(ocean cells lie outside the continents, so there is no ambiguity). Continent
+contouring is **off by default**, so no extra preprocessing is needed. If you
+supply your own plate model, put the continental COB features in
+`plate_model.local.cob_features`.
+
+Alternatively, you can turn continent contouring **on** and supply dynamically
+**contoured** passive margins produced by the separate EarthByte
 [continent-contouring](https://github.com/EarthByte/continent-contouring)
 workflow (set `proximity.use_continent_contouring: true` and point the config at
-its outputs). The COB-line-segment option is the default and needs no extra
-preprocessing.
+its outputs).
 
 ### Step 3 — Predicted sediment thickness
 
@@ -318,9 +325,10 @@ is a summary of the main blocks.
 |-------|-----|---------|
 | `plate_model` | `use_pmm` | `true`: fetch the model from the GPlately Plate Model Manager. `false`: use your own local files (fill in the `local:` block). |
 | | `name` | PMM model name (default `zahirovic2022`). |
+| | `anchor_plate_id` | Plate held fixed in the reconstruction reference frame (default `0` = the model's absolute frame). Controls how ocean floor is reconstructed through time in Step 2. |
 | `time` | `min`, `max`, `step` | Reconstruction times (Ma) to compute. |
 | | `max_reconstruction_time` | Do not reconstruct ocean floor older than this; `null` = use the plate model's limit. |
-| `proximity` | `use_continent_contouring` | `false` (default): distance to the model's COB line segments. `true`: use dynamically contoured passive margins. |
+| `proximity` | `use_continent_contouring` | `false` (default, off): distance to the model's continental COBs (the same COBs used for age gridding; line segments or COB polygons both work). `true`: use dynamically contoured passive margins. |
 | | `use_continent_obstacles` | `true` (default): shortest path *around* continents. `false`: straight great-circle distance. |
 | | `clamp_mean_distance_km` | Cap on distance to margin (default 3000 km; see Step 2). |
 | `grids` | `internal_spacing` | Grid spacing used for the internal distance computation (coarser = faster). |
@@ -337,8 +345,8 @@ is a summary of the main blocks.
 ### Plate model — Plate Model Manager or your own files
 
 By default the workflow fetches the **Zahirovic2022** model from the GPlately
-Plate Model Manager (PMM), which supplies rotations, topologies, coastlines, COB
-line segments and age grids automatically:
+Plate Model Manager (PMM), which supplies rotations, topologies, coastlines,
+continent-ocean boundaries (COBs) and age grids automatically:
 
 ```yaml
 plate_model:
@@ -365,7 +373,7 @@ To use **your own plate model** instead, set `use_pmm: false`, fill in the
 
 - a **plate model**: rotation files and topological features;
 - **seafloor-age grids**, one per reconstruction time;
-- **passive-margin features** (COB line segments, or contoured margins);
+- **passive-margin features** (continental COBs — line segments or polygons — or contoured margins);
 - **continent obstacles** (coastlines) for the shortest-path distance;
 - the shipped **RHCW18 age-depth table** (only for the `rhcw18` model).
 

@@ -5,7 +5,7 @@
 #
 # This example reproduces the default ("traditional") workflow:
 #   * plate model     : Zahirovic2022 (loaded via the GPlately Plate Model Manager)
-#   * proximity target: COB line segments (distance to passive continental margins)
+#   * proximity target: continental COBs (distance to passive continental margins)
 #   * obstacles       : coastlines (shortest-path distance around continents)
 #   * no continent contouring, no LIPs, no seamounts
 # =============================================================================
@@ -20,13 +20,21 @@ plate_model:
   use_pmm: true
   name: zahirovic2022            # default plate model
   data_dir: plate_model          # where PMM caches files (or where local files live)
+
+  # Anchor plate: the plate held fixed in the reconstruction reference frame.
+  # 0 = the model's default absolute (spin-axis / mantle) frame. Change it to
+  # reconstruct in a different frame (e.g. a specific plate ID to hold that
+  # plate fixed). This controls how ocean floor is reconstructed back through
+  # time when computing the distance-to-margin grids (Step 2).
   anchor_plate_id: 0
 
   local:                         # only used when use_pmm: false
     rotation_files: []           #   e.g. [model/rotations.rot]
     topology_files: []           #   e.g. [model/topologies.gpml]
     coastline_files: []          #   used as continent obstacles (optional)
-    cob_features: []             #   COB line segments = passive-margin proximity target
+    cob_features: []             #   continental COBs used for age gridding =
+                                 #   passive-margin proximity target (COB line
+                                 #   segments/polylines OR continental COB polygons)
 
 
 # ---- Time range (Ma) --------------------------------------------------------
@@ -42,9 +50,15 @@ time:
 
 # ---- Passive-margin proximity source ---------------------------------------
 proximity:
-  # DEFAULT (false): measure distance to COB *line segments* from the plate model.
+  # Continent contouring is OFF by default.
+  #
+  # DEFAULT (false): measure distance to the continent-ocean boundary (COB)
+  #   supplied by the plate model -- the SAME continental COBs used to build the
+  #   seafloor-age grids. These may be provided as COB line segments (polylines)
+  #   OR as continental COB polygons; both are handled, because for a polygon the
+  #   distance is measured to its boundary, i.e. the COB line.
   # true: use dynamically contoured passive margins instead (you must first run
-  #       the EarthByte continent-contouring workflow and point to its outputs).
+  #   the EarthByte continent-contouring workflow and point to its outputs below).
   use_continent_contouring: false
   continent_contouring:
     passive_margin_features: null      # -> proximity target
