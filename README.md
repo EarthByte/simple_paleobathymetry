@@ -13,7 +13,11 @@ read any other repository to use it.
 crust whose age is defined in the seafloor-age grids. It does **not** compute
 paleobathymetry for submerged **continental** crust (continental shelves,
 plateaus, rifted or stretched continental margins); those areas have no seafloor
-age and are left undefined (`NaN`) in the output.
+age and are left undefined (`NaN`) in the output. To reconstruct the
+paleobathymetry of submerged continental crust — as well as ocean crust that is
+still preserved today — use **[pyBacktrack](https://github.com/EarthByte/pyBacktrack)**,
+which backtracks/backstrips drill-site and grid stratigraphy to recover
+paleo-water-depths in both settings.
 
 A typical run is a single command:
 
@@ -488,6 +492,26 @@ line-segment set. Do **not** point it at COB polygons (see Step 2).
 **Do I need the internet?** Only when using the PMM (`use_pmm: true`), which
 downloads and caches the plate model and age grids on first use. With a local
 plate model and local age grids the workflow runs offline.
+
+**What about submerged continental crust?** This workflow does not cover it (see
+*Scope* above). Use [pyBacktrack](https://github.com/EarthByte/pyBacktrack) to
+reconstruct the paleobathymetry of submerged continental crust and of ocean
+crust preserved today.
+
+---
+
+## See also
+
+- **[pyBacktrack](https://github.com/EarthByte/pyBacktrack)** — backtracking /
+  backstripping of drill-site and grid stratigraphy to reconstruct paleo-water
+  depths for **submerged continental crust** as well as **ocean crust preserved
+  today**. The complement to this workflow, which handles ocean crust through
+  time from age grids.
+- **[predicting-sediment-thickness](https://github.com/EarthByte/predicting-sediment-thickness)**
+  — the engine used here for distance-to-margin and sediment-thickness prediction
+  (Steps 2–3).
+- **[continent-contouring](https://github.com/EarthByte/continent-contouring)** —
+  dynamically contoured passive margins for deep-time reconstructions (see Step 2).
 
 ---
 
