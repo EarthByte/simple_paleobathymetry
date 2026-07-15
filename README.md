@@ -9,15 +9,15 @@ is deliberately self-contained: everything you need to understand *what it does*
 and *how each number is computed* is in this README, so you should not need to
 read any other repository to use it.
 
-**Scope.** This workflow reconstructs the depth of **oceanic crust** only —
-crust whose age is defined in the seafloor-age grids. It does **not** compute
+**Scope.** Steps 1–4 reconstruct the depth of **oceanic crust** only — crust
+whose age is defined in the seafloor-age grids. They do **not** compute
 paleobathymetry for submerged **continental** crust (continental shelves,
 plateaus, rifted or stretched continental margins); those areas have no seafloor
-age and are left undefined (`NaN`) in the output. To reconstruct the
-paleobathymetry of submerged continental crust — as well as ocean crust that is
-still preserved today — use **[pyBacktrack](https://github.com/EarthByte/pyBacktrack)**,
-which backtracks/backstrips drill-site and grid stratigraphy to recover
-paleo-water-depths in both settings.
+age and are left undefined (`NaN`) in the Step 4 output. An optional **Step 5**
+closes this gap using **[pyBacktrack](https://github.com/EarthByte/pyBacktrack)**,
+which backtracks/backstrips drill-site and grid stratigraphy to reconstruct
+paleo-water-depths on submerged continental crust and on ocean crust preserved
+today, merging in the Step 4 grids to also cover crust that has since subducted.
 
 A typical run is a single command:
 
@@ -31,11 +31,12 @@ python run_paleobathymetry.py config.yml
 
 - [What the workflow computes](#what-the-workflow-computes)
 - [Quick start](#quick-start)
-- [The four steps in detail](#the-four-steps-in-detail)
+- [The five steps in detail](#the-five-steps-in-detail)
   - [Step 1 — Seafloor age → basement depth](#step-1--seafloor-age--basement-depth)
   - [Step 2 — Distance to passive continental margins](#step-2--distance-to-passive-continental-margins)
   - [Step 3 — Predicted sediment thickness](#step-3--predicted-sediment-thickness)
   - [Step 4 — Paleobathymetry with sediment isostasy](#step-4--paleobathymetry-with-sediment-isostasy)
+  - [Step 5 — pyBacktrack paleobathymetry (merged)](#step-5--pybacktrack-paleobathymetry-merged)
 - [Configuration reference](#configuration-reference)
 - [Inputs and outputs](#inputs-and-outputs)
 - [Installation](#installation)
@@ -104,11 +105,12 @@ to change any of this; every option is explained inline in that file and in the
 
 ---
 
-## The four steps in detail
+## The five steps in detail
 
 The steps run in order; each writes grids that the next step reads. You can turn
 any step on or off in the config (`run.steps`) to re-run part of the pipeline
-without recomputing everything.
+without recomputing everything. Step 5 is optional and reads Step 4's output
+without modifying it.
 
 ### Step 1 — Seafloor age → basement depth
 
@@ -411,6 +413,50 @@ seafloor than the bare basement. This streamlined workflow does not add
 large igneous provinces (LIPs) or seamounts, so there is no volcanic-height
 term.
 
+### Step 5 — pyBacktrack paleobathymetry (merged)
+
+**Input:** the Step 4 paleobathymetry grids (read-only), plus the plate model
+(rotations, static polygons, anchor plate) and the present-day seafloor-age
+grid.
+**Output:** `output/PaleobathymetryPyBacktrack/paleobathymetry_<t>Ma.nc` — the
+same-format paleobathymetry grids, now also covering submerged continental
+crust and crust that has since been subducted. This is **optional** (default
+on; toggle with `run.steps.pybacktrack`) and requires the `pybacktrack`
+package. The Step 4 grids in `output/Paleobathymetry/` are left untouched.
+
+Steps 1–4 only reconstruct **oceanic** crust that is defined by the seafloor-age
+grids; they leave continental crust and long-subducted ocean crust as `NaN`.
+[pyBacktrack](https://github.com/EarthByte/pyBacktrack) (Müller, Cannon,
+Williams & Dutkiewicz, 2018) fills that gap: it backtracks/backstrips a uniform
+grid of synthetic drill sites on **present-day** crust — including submerged
+continental crust — back through time. It cannot, however, generate
+paleobathymetry for crust that no longer exists today (already subducted), so
+this step **merges in** the Step 4 grids to fill those regions, using
+pyBacktrack's own `reconstruct_paleo_bathymetry_grids()` merge support
+(pyBacktrack's reconstructed values take precedence on crust that still exists
+today; the Step 4 values fill in the rest).
+
+To keep the two paleobathymetry sources aligned, Step 5 reuses the same
+settings as Steps 1–4:
+
+- the same plate model, rotations and anchor plate (`plate_model`);
+- the shipped present-day seafloor-age grid (`model["age_grid"](0)`) — the
+  static polygons needed to assign plate IDs are fetched from the same plate
+  model via the Plate Model Manager (or from
+  `plate_model.local.static_polygon_files` for a local plate model);
+- the same ocean age → depth model (`age_depth.model`) — mapped onto
+  pyBacktrack's equivalent constant (`gdh1` → `AGE_TO_DEPTH_MODEL_GDH1`,
+  `rhcw18` → `AGE_TO_DEPTH_MODEL_RHCW18`, `crosby09` →
+  `AGE_TO_DEPTH_MODEL_CROSBY_2007`; `parsons_sclater` has no pyBacktrack
+  equivalent and is not supported by this step);
+- the same output grid spacing and time range (`grids.output_spacing`,
+  `time.min`/`max`/`step`).
+
+pyBacktrack's own bundled global sediment-thickness, crustal-thickness and
+topography grids are used as-is (as recommended when swapping plate models in
+the pyBacktrack documentation) — only the plate model, ocean model, present-day
+age grid, and the Step 4 merge grids are overridden.
+
 ---
 
 ## Configuration reference
@@ -422,7 +468,8 @@ is a summary of the main blocks.
 |-------|-----|---------|
 | `plate_model` | `use_pmm` | `true`: fetch the model from the GPlately Plate Model Manager. `false`: use your own local files (fill in the `local:` block). |
 | | `name` | PMM model name (default `zahirovic2022`). |
-| | `anchor_plate_id` | Plate held fixed in the reconstruction reference frame (default `0` = the model's absolute frame). Controls how ocean floor is reconstructed through time in Step 2. |
+| | `anchor_plate_id` | Plate held fixed in the reconstruction reference frame (default `0` = the model's absolute frame). Controls how ocean floor is reconstructed through time in Step 2, and the reference frame used in Step 5. |
+| | `local.static_polygon_files` | Static polygon file(s) for a local plate model (`use_pmm: false`); required by Step 5 (pyBacktrack) to assign plate IDs. |
 | `time` | `min`, `max`, `step` | Reconstruction times (Ma) to compute. |
 | | `max_reconstruction_time` | Do not reconstruct ocean floor older than this; `null` = use the plate model's limit. |
 | `proximity` | `use_continent_contouring` | `false` (default, off): distance to the COB line segments in `cob_line_segments`. `true`: use dynamically contoured passive margins. |
@@ -439,7 +486,7 @@ is a summary of the main blocks.
 | `run` | `predicting_sediment_thickness_dir` | Where the public sediment-thickness engine lives (default `submodules/…`). |
 | | `output_dir`, `num_cpus` | Output location and parallelism. |
 | | `mask_continents` | `true` (default): blank continents in every output using the age-grid mask (see below). |
-| | `steps` | Turn each of the four steps on/off individually. |
+| | `steps` | Turn each of the five steps on/off individually. |
 
 ### Plate model — Plate Model Manager or your own files
 
@@ -483,11 +530,12 @@ model.
 
 ```
 output/
-├── BasementDepth/       basement_depth_<t>Ma.nc           (Step 1)
-├── Distances/           mean_distance_<spacing>d_<t>.nc   (Step 2)
-├── SedimentThickness/   sediment_thickness_<t>Ma.nc       (Step 3)
-├── Paleobathymetry/     paleobathymetry_<t>Ma.nc          (Step 4)  ← final product
-└── ContinentContours/   passive_margin_features.gpmlz     (only if continent contouring is on)
+├── BasementDepth/               basement_depth_<t>Ma.nc           (Step 1)
+├── Distances/                   mean_distance_<spacing>d_<t>.nc   (Step 2)
+├── SedimentThickness/           sediment_thickness_<t>Ma.nc       (Step 3)
+├── Paleobathymetry/             paleobathymetry_<t>Ma.nc          (Step 4)  ← ocean crust only
+├── ContinentContours/           passive_margin_features.gpmlz     (only if continent contouring is on)
+└── PaleobathymetryPyBacktrack/  paleobathymetry_<t>Ma.nc          (Step 5, optional) ← ocean + continental crust
 ```
 
 ### Continental masking (on by default)
@@ -501,7 +549,9 @@ conversion; the distance and sediment-thickness grids are additionally masked
 with the age-grid mask (nearest-neighbour, so the coastline stays crisp); and
 paleobathymetry inherits `NaN` from the masked basement + sediment grids. Turn
 this off with `run.mask_continents: false` only if you deliberately want values
-over continental crust.
+over continental crust. This masking applies to Steps 1–4 only; the optional
+Step 5 (pyBacktrack) output is deliberately **not** masked, since it covers
+submerged continental crust as well as ocean crust.
 
 ---
 
@@ -514,9 +564,9 @@ conda env create -f environment.yml
 conda activate simple_paleobathymetry
 ```
 
-This installs `pygplates`, `gplately`, the `plate-model-manager`, `GMT`, and the
-usual scientific-Python stack (`numpy`, `scipy`, `pandas`, `xarray`, `netcdf4`,
-`joblib`, `pyyaml`).
+This installs `pygplates`, `gplately`, the `plate-model-manager`, `pybacktrack`
+(for the optional Step 5), `GMT`, and the usual scientific-Python stack
+(`numpy`, `scipy`, `pandas`, `xarray`, `netcdf4`, `joblib`, `pyyaml`).
 
 ### 2. Add the sediment-thickness engine
 
@@ -559,10 +609,11 @@ line-segment set. Do **not** point it at COB polygons (see Step 2).
 downloads and caches the plate model and age grids on first use. With a local
 plate model and local age grids the workflow runs offline.
 
-**What about submerged continental crust?** This workflow does not cover it (see
-*Scope* above). Use [pyBacktrack](https://github.com/EarthByte/pyBacktrack) to
-reconstruct the paleobathymetry of submerged continental crust and of ocean
-crust preserved today.
+**What about submerged continental crust?** Steps 1–4 do not cover it (see
+*Scope* above). The optional Step 5 does, using
+[pyBacktrack](https://github.com/EarthByte/pyBacktrack) to reconstruct
+paleobathymetry on submerged continental crust and on ocean crust preserved
+today, merged with the Step 4 grids to also cover subducted ocean crust.
 
 ---
 
@@ -571,8 +622,8 @@ crust preserved today.
 - **[pyBacktrack](https://github.com/EarthByte/pyBacktrack)** — backtracking /
   backstripping of drill-site and grid stratigraphy to reconstruct paleo-water
   depths for **submerged continental crust** as well as **ocean crust preserved
-  today**. The complement to this workflow, which handles ocean crust through
-  time from age grids.
+  today**. Used directly by the optional Step 5 of this workflow, which merges
+  pyBacktrack's paleobathymetry with the Step 4 grids.
 - **[predicting-sediment-thickness](https://github.com/EarthByte/predicting-sediment-thickness)**
   — the engine used here for distance-to-margin and sediment-thickness prediction
   (Steps 2–3).
@@ -608,6 +659,11 @@ crust preserved today.
 - **Sykes, T.J.S. (1996).** A correction for sediment load upon the ocean floor:
   uniform versus varying sediment density estimations. *Marine Geology*, 133,
   35–49. *(Isostatic sediment-load correction.)*
+- **Müller, R.D., Cannon, J., Williams, S. & Dutkiewicz, A. (2018).**
+  PyBacktrack 1.0: A tool for reconstructing paleobathymetry on oceanic and
+  continental crust. *Geochemistry, Geophysics, Geosystems*, 19, 1898–1909,
+  doi: [10.1029/2017GC007313](https://doi.org/10.1029/2017GC007313).
+  *(pyBacktrack; Step 5.)*
 - **Müller, R.D., Seton, M., Zahirovic, S., Williams, S.E., Matthews, K.J.,
   Wright, N.M., Shephard, G.E., Maloney, K.T., Barnett-Moore, N., Hosseinpour,
   M., Bower, D.J. & Cannon, J. (2016).** Ocean basin evolution and global-scale

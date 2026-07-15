@@ -6,6 +6,7 @@ dependencies:
   - pygplates
   - gplately
   - plate-model-manager
+  - pybacktrack
   - gmt>=6
   - numpy
   - scipy
