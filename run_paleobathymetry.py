@@ -40,6 +40,21 @@ import yaml
 # Small helpers
 # =============================================================================
 
+# Default passive-margin proximity target shipped with this repository: a clean
+# set of continent-ocean-boundary (COB) *line segments* (polylines) along
+# PASSIVE margins only (Müller et al., 2016; Gee & Kent 2007 timescale; the
+# GPlates default / Zahirovic2022-compatible dataset). The distance-to-margin
+# algorithm requires line segments -- COB polygons must not be used (see the
+# README "Step 2"). Path is relative to the directory the workflow is run from.
+DEFAULT_COB_LINE_SEGMENTS = "data/Global_EarthByte_GPlates_PresentDay_COBs.gpmlz"
+
+# The shipped present-day COB line segments are a Mesozoic-Cenozoic dataset.
+# Beyond this age (pre-Pangea breakup) they no longer capture the passive
+# margins that existed in deep time, so continent contouring should be used
+# instead to identify passive-margin segments dynamically (see README, Step 2).
+DEEP_TIME_COB_THRESHOLD_MA = 250
+
+
 def log(msg):
     print("[simple_paleobathymetry] {}".format(msg), flush=True)
 
@@ -111,8 +126,13 @@ def load_plate_model(cfg):
     """Return a dict describing the plate model, from PMM or from local files.
 
     Keys returned:
-        rotation_files, topology_files, coastline_files, cob_files,
+        rotation_files, topology_files, coastline_files,
         anchor_plate_id, big_time, age_grid(time)->path
+
+    Note: the passive-margin proximity target (COB line segments) is NOT taken
+    from the plate model -- the PMM does not deliver clean COB line segments to
+    end users, and COB polygons must not be used. It comes from
+    proximity.cob_line_segments (default: the dataset shipped in data/).
     """
     pm = cfg["plate_model"]
     anchor = int(pm.get("anchor_plate_id", 0))
@@ -138,7 +158,6 @@ def load_plate_model(cfg):
             rotation_files=model.get_rotation_model(),
             topology_files=model.get_topologies(),
             coastline_files=model.get_coastlines(return_none_if_not_exist=True) or [],
-            cob_files=model.get_COBs(return_none_if_not_exist=True) or [],
             anchor_plate_id=anchor,
             big_time=int(model.get_big_time()),
         )
@@ -159,7 +178,6 @@ def load_plate_model(cfg):
         rotation_files=list(local.get("rotation_files", []) or []),
         topology_files=list(local.get("topology_files", []) or []),
         coastline_files=list(local.get("coastline_files", []) or []),
-        cob_files=list(local.get("cob_features", []) or []),
         anchor_plate_id=anchor,
         big_time=None,
     )
@@ -183,12 +201,13 @@ def load_plate_model(cfg):
 # Step 1: seafloor age -> basement depth  (thermal subsidence model)
 # =============================================================================
 #
-# As oceanic lithosphere moves away from a mid-ocean ridge it cools, contracts
-# and sinks. "Depth to basement" is the depth of the top of the igneous crust
-# (i.e. the seafloor BEFORE any sediment is added on top). Every model below
-# turns a seafloor age (Ma) into that depth. Depths are returned in metres and
-# are NEGATIVE downwards (e.g. -2600 m = 2600 m below sea level). Cells with no
-# age (NaN, i.e. continents / no ocean floor) stay NaN.
+# As oceanic lithosphere moves away from a mid-ocean ridge it cools; the mantle
+# lithosphere thickens and becomes denser (the crust density is ~unchanged), and
+# the column subsides isostatically. "Depth to basement" is the depth of the top
+# of the igneous crust (i.e. the seafloor BEFORE any sediment is added on top).
+# Every model below turns a seafloor age (Ma) into that depth. Depths are
+# returned in metres and are NEGATIVE downwards (e.g. -2600 m = 2600 m below sea
+# level). Cells with no age (NaN, i.e. continents / no ocean floor) stay NaN.
 #
 # Four models are provided so results can be compared; pick one with
 # `age_depth.model` in the config.
@@ -329,7 +348,8 @@ def step_age_to_depth(cfg, model, times, out_dir):
 def _resolve_proximity_and_obstacles(cfg, model):
     """Return (proximity_files, obstacle_files, plate_boundary_obstacles).
 
-    Default: proximity = COB *line segments* from the plate model,
+    Default: proximity = the shipped COB *line segments* file
+             (proximity.cob_line_segments; DEFAULT_COB_LINE_SEGMENTS),
              obstacles = coastlines (shortest-path around continents).
     Option:  continent contouring -> passive-margin features / contour features.
     """
@@ -347,11 +367,19 @@ def _resolve_proximity_and_obstacles(cfg, model):
         proximity_files = [pm_feat]
         obstacle_files = [cc_feat] if (prox.get("use_continent_obstacles", True) and cc_feat) else None
     else:
-        proximity_files = list(model["cob_files"])
-        if not proximity_files:
+        cob = prox.get("cob_line_segments", DEFAULT_COB_LINE_SEGMENTS)
+        if not cob:
             raise ValueError(
-                "No COB line-segment features found for the plate model. "
-                "Provide plate_model.local.cob_features, or enable continent contouring."
+                "proximity.cob_line_segments must point to a COB line-segment "
+                "file (or enable continent contouring)."
+            )
+        proximity_files = [cob] if isinstance(cob, str) else list(cob)
+        missing = [p for p in proximity_files if not os.path.isfile(p)]
+        if missing:
+            raise FileNotFoundError(
+                "COB line-segment file(s) not found: {}. The default dataset "
+                "ships in data/; run the workflow from the repository root, or "
+                "set proximity.cob_line_segments to a valid path.".format(missing)
             )
         obstacle_files = list(model["coastline_files"]) if prox.get("use_continent_obstacles", True) else None
         if prox.get("use_continent_obstacles", True) and not obstacle_files:
@@ -363,15 +391,16 @@ def _resolve_proximity_and_obstacles(cfg, model):
     return proximity_files, obstacle_files, pbo
 
 
-def _report_cob_geometry_types(proximity_files):
-    """Log the geometry types of the resolved COB proximity features (info only).
+def _check_cob_line_segments(proximity_files):
+    """Warn if the COB proximity features contain polygons instead of polylines.
 
-    The distance-to-margin computation measures the distance from each ocean
-    point to the *continent-ocean boundary*. That target may be supplied either
-    as COB line segments (polylines) or as continental COB polygons -- both are
-    valid: for a polygon the distance is measured to its boundary, i.e. the COB
-    line. This routine just reports which type was loaded so the run log is
-    self-documenting; it never warns or fails. Any error is swallowed.
+    The distance-to-passive-margin algorithm requires a CLEAN set of passive-
+    margin COB *line segments* (polylines). COB polygons must NOT be used: a
+    polygon's outline closes all the way around a continent (including active
+    margins), so it would generate false passive-margin proximities. This check
+    warns loudly if any polygons are found among the proximity features (e.g. if
+    the user points proximity.cob_line_segments at a polygon dataset). Advisory
+    only: any error here is swallowed so it can never stop a run.
     """
     try:
         import pygplates
@@ -398,12 +427,19 @@ def _report_cob_geometry_types(proximity_files):
                     else:
                         n_other += 1
 
-        if n_polyline or n_polygon or n_other:
-            log("  COB proximity geometries: {} polyline(s), {} polygon(s), "
-                "{} other -- distance is measured to the continent-ocean "
-                "boundary either way.".format(n_polyline, n_polygon, n_other))
+        if n_polygon:
+            log("WARNING: the COB proximity features contain {} POLYGON "
+                "geometry(ies) (with {} polyline(s)). This workflow requires COB "
+                "LINE SEGMENTS (polylines) along PASSIVE margins only; COB "
+                "polygons wrap the whole continent and create false passive-"
+                "margin proximities. Use the shipped "
+                "data/Global_EarthByte_GPlates_PresentDay_COBs.gpmlz or another "
+                "clean COB line-segment file.".format(n_polygon, n_polyline))
+        elif n_polyline:
+            log("  COB proximity target: {} line-segment feature(s) "
+                "(polylines).".format(n_polyline))
     except Exception:
-        # Purely informational; never interrupt the workflow.
+        # Advisory only; never interrupt the workflow.
         pass
 
 
@@ -425,7 +461,7 @@ def step_distance_grids(cfg, model, times, out_dir):
     log("  proximity target: {}".format(proximity_files))
     log("  continent obstacles: {}".format(obstacle_files))
     if not cfg["proximity"].get("use_continent_contouring", False):
-        _report_cob_geometry_types(proximity_files)
+        _check_cob_line_segments(proximity_files)
 
     input_points = generate_input_points_grid(internal)[0]
 
@@ -592,6 +628,20 @@ def main():
     times = list(range(int(t["min"]), int(t["max"]) + 1, int(t.get("step", 1))))
     log("Time range: {} to {} Ma (step {}), {} times.".format(
         t["min"], t["max"], t.get("step", 1), len(times)))
+
+    # Deep-time alert: the shipped present-day COB line segments only capture
+    # Mesozoic-Cenozoic passive margins. Beyond ~250 Ma, switch on continent
+    # contouring to identify passive-margin segments dynamically.
+    if (times and max(times) > DEEP_TIME_COB_THRESHOLD_MA
+            and not cfg["proximity"].get("use_continent_contouring", False)):
+        log("NOTE: reconstruction extends beyond {} Ma, but continent contouring "
+            "is off. The shipped present-day COB line segments only represent "
+            "Mesozoic-Cenozoic passive margins and do not capture passive margins "
+            "that existed in deeper time. For deep-time paleobathymetry, switch on "
+            "continent contouring (proximity.use_continent_contouring: true) to "
+            "identify passive-margin segments dynamically and generate a suitable "
+            "proximity file. See the README (Step 2)."
+            .format(DEEP_TIME_COB_THRESHOLD_MA))
 
     out_root = cfg["run"].get("output_dir", "output")
     basement_dir = os.path.join(out_root, "BasementDepth")

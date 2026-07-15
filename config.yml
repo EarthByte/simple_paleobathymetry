@@ -5,7 +5,7 @@
 #
 # This example reproduces the default ("traditional") workflow:
 #   * plate model     : Zahirovic2022 (loaded via the GPlately Plate Model Manager)
-#   * proximity target: continental COBs (distance to passive continental margins)
+#   * proximity target: shipped COB line segments (distance to passive continental margins)
 #   * obstacles       : coastlines (shortest-path distance around continents)
 #   * no continent contouring, no LIPs, no seamounts
 # =============================================================================
@@ -32,12 +32,16 @@ plate_model:
     rotation_files: []           #   e.g. [model/rotations.rot]
     topology_files: []           #   e.g. [model/topologies.gpml]
     coastline_files: []          #   used as continent obstacles (optional)
-    cob_features: []             #   continental COBs used for age gridding =
-                                 #   passive-margin proximity target (COB line
-                                 #   segments/polylines OR continental COB polygons)
+    # NOTE: the passive-margin proximity target (COB line segments) is set under
+    # `proximity:` below, NOT here -- it is independent of the plate model.
 
 
 # ---- Time range (Ma) --------------------------------------------------------
+# NOTE ON DEEP TIME: the shipped COB line segments represent Mesozoic-Cenozoic
+# passive margins. For reconstructions beyond ~250 Ma (pre-Pangea breakup) they
+# are no longer appropriate -- switch continent contouring ON (see `proximity:`)
+# to identify passive-margin segments dynamically. The workflow prints a reminder
+# if `max` exceeds ~250 Ma with continent contouring still off.
 time:
   min: 0
   max: 170
@@ -52,15 +56,32 @@ time:
 proximity:
   # Continent contouring is OFF by default.
   #
-  # DEFAULT (false): measure distance to the continent-ocean boundary (COB)
-  #   supplied by the plate model -- the SAME continental COBs used to build the
-  #   seafloor-age grids. These may be provided as COB line segments (polylines)
-  #   OR as continental COB polygons; both are handled, because for a polygon the
-  #   distance is measured to its boundary, i.e. the COB line.
+  # DEFAULT (false): measure distance to the COB LINE SEGMENTS in the file below.
+  #   Appropriate for Mesozoic-Cenozoic times (see the deep-time note below).
   # true: use dynamically contoured passive margins instead (you must first run
   #   the EarthByte continent-contouring workflow and point to its outputs below).
+  #   REQUIRED for deep time (beyond ~250 Ma): the shipped present-day COB line
+  #   segments do not capture pre-Pangea passive margins, so contouring is used to
+  #   identify passive-margin segments dynamically at each time step.
   use_continent_contouring: false
-  continent_contouring:
+
+  # Passive-margin proximity target: a CLEAN set of continent-ocean-boundary
+  # (COB) *line segments* (polylines) along PASSIVE margins only. The distance
+  # algorithm requires line segments -- COB POLYGONS MUST NOT BE USED (a polygon
+  # outline wraps the whole continent, including active margins, creating false
+  # passive-margin proximities). The Plate Model Manager does not deliver COB
+  # line segments, so this workflow ships a default dataset in data/ and does NOT
+  # take COBs from the plate model.
+  #
+  # Default dataset: Global present-day COB line segments (Müller et al., 2016;
+  # Gee & Kent 2007 timescale) -- the GPlates default, made compatible with
+  # Zahirovic2022. Suitable for most EarthByte Mesozoic-Cenozoic plate models
+  # published up to 2022, EXCEPT models with severely altered COB outlines (the
+  # Clennett / Alfonso family) -- for those, supply the matching COB line
+  # segments here.
+  cob_line_segments: data/Global_EarthByte_GPlates_PresentDay_COBs.gpmlz
+
+  continent_contouring:                # only used when use_continent_contouring: true
     passive_margin_features: null      # -> proximity target
     continent_contour_features: null   # -> continent obstacle
 
