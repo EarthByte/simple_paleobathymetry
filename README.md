@@ -1,8 +1,7 @@
 # simple_paleobathymetry
 
 A streamlined, config-driven workflow that reconstructs **paleobathymetry of
-ocean crust** — the depth of the sediment-covered seafloor — through geological
-time.
+ocean crust** through geological time.
 
 Given a plate model and a set of seafloor-age grids, the workflow produces one
 paleobathymetry grid per time step, from the present day back through time. It
@@ -48,11 +47,15 @@ The depth of the seafloor in the past is not something we can measure directly �
 the ocean floor that existed 100 million years ago has largely been subducted.
 Instead we *reconstruct* it from physical principles:
 
-1. **Oceanic crust sinks as it ages.** New crust forms hot at mid-ocean ridges
-   and cools as it spreads away. Cooling makes it denser, so it contracts and
-   subsides. The relationship between a piece of seafloor's *age* and its
-   *depth* is well established, so a map of seafloor age can be turned into a
-   map of basement (bare-rock) depth.
+1. **Oceanic lithosphere subsides as it ages.** New crust forms hot at
+   mid-ocean ridges. As the plate spreads away it loses heat to the ocean, and
+   the mantle lithosphere beneath the crust **thickens and cools**, becoming
+   denser. (The crust itself stays essentially unchanged in density, apart from
+   minor hydrothermal alteration — it is the growth and cooling of the mantle
+   lithosphere that matters.) This progressively denser, thicker lithospheric
+   column sinks isostatically, so the seafloor deepens with age. That age–depth
+   relationship is well established, so a map of seafloor age can be turned into
+   a map of basement (bare-rock) depth.
 
 2. **Sediment piles up on top of that basement**, and the seafloor we care
    about is the *top of the sediment*, not the bare rock. Older, more distal
@@ -61,7 +64,7 @@ Instead we *reconstruct* it from physical principles:
    correction because the weight of the sediment pushes the crust down further.
 
 The four steps below carry out exactly this reasoning. The final product,
-**paleobathymetry**, is the depth of the sediment-covered seafloor:
+**paleobathymetry**, is the depth of the sediment-covered **ocean floor**:
 
 ```
 paleobathymetry  =  basement depth  +  sediment thickness  −  isostatic correction
@@ -90,7 +93,7 @@ python run_paleobathymetry.py config.yml
 
 The shipped `config.yml` runs the default configuration end to end: the
 **Zahirovic2022** plate model (fetched automatically), the **GDH1** age-depth
-model, distances measured to the model's **continental COBs**, and Dutkiewicz et al. (2017)
+model, distances measured to the shipped **COB line segments**, and Dutkiewicz et al. (2017)
 sediment thickness — no large igneous provinces or seamounts. Edit `config.yml`
 to change any of this; every option is explained inline in that file and in the
 [configuration reference](#configuration-reference) below.
@@ -156,8 +159,8 @@ level).
 ### Step 2 — Distance to passive continental margins
 
 **Input:** the plate model (rotations + topologies), the seafloor-age grids, and
-a set of *passive-margin* features (by default the plate model's continent-ocean
-boundaries — COB line segments or COB polygons).
+a clean set of **passive-margin COB line segments** (the default dataset shipped
+in `data/`).
 **Output:** `output/Distances/mean_distance_<spacing>d_<t>.nc` — for each ocean
 cell, its **mean distance (km) to the nearest passive continental margin,
 averaged over the lifetime of that piece of ocean floor**.
@@ -205,21 +208,60 @@ calibrated range, so distances are **clamped to a maximum of 3000 km**
 extrapolation, so the clamp both keeps the input in range and reflects that
 "very far from any margin" saturates to a thin, pelagic sediment cover.
 
-**What defines a "passive margin"?** By default the workflow measures distance to
-the plate model's **continent-ocean boundaries (COBs)** — the *same* continental
-COBs used to build the seafloor-age grids. These may be supplied either as COB
-line segments (polylines) or as continental COB polygons; **both work**, because
-for a polygon the distance is measured to its boundary, which is the COB line
-(ocean cells lie outside the continents, so there is no ambiguity). Continent
-contouring is **off by default**, so no extra preprocessing is needed. If you
-supply your own plate model, put the continental COB features in
-`plate_model.local.cob_features`.
+**What defines a "passive margin" — and why COB *line segments*, not polygons.**
+The distance calculation needs a clean set of **continent-ocean boundary (COB)
+line segments (polylines) that trace passive margins only**. This matters:
 
-Alternatively, you can turn continent contouring **on** and supply dynamically
-**contoured** passive margins produced by the separate EarthByte
+- A **COB polygon** outlines the *entire* continent, so its boundary also runs
+  along **active** margins (subduction zones, transforms). Measuring distance to
+  a polygon would therefore report short "passive-margin" distances next to
+  active margins that receive little continent-derived sediment — **false
+  positives** that corrupt the sediment-thickness prediction. **COB polygons
+  must not be used** as the proximity target.
+- A curated COB **line-segment** dataset includes only the passive-margin
+  boundaries and omits active margins, which is exactly what the algorithm
+  needs.
+
+Because the GPlately **Plate Model Manager does not deliver COB line segments**
+to end users, this workflow **ships its own default dataset** and does *not* take
+COBs from the plate model. The shipped file is the global present-day COB line
+segments of **Müller et al. (2016)** (Gee & Kent 2007 timescale) — the GPlates
+default set, made compatible with Zahirovic2022 — containing passive-margin
+boundaries only:
+
+```
+data/Global_EarthByte_GPlates_PresentDay_COBs.gpmlz
+```
+
+This default is suitable for **most EarthByte Mesozoic–Cenozoic plate models
+published up to 2022**. The exception is models with severely altered COB
+outlines (the **Clennett / Alfonso** family); for those, supply the matching COB
+line segments via `proximity.cob_line_segments`. To use your own COB line
+segments, point that setting at your file (it stays independent of the plate
+model). As a safeguard, the workflow inspects the proximity features at run time
+and **warns if it finds polygons** rather than line segments.
+
+Continent contouring is **off by default**, so no extra preprocessing is needed.
+Alternatively, you can turn it **on** and supply dynamically **contoured**
+passive margins produced by the separate EarthByte
 [continent-contouring](https://github.com/EarthByte/continent-contouring)
 workflow (set `proximity.use_continent_contouring: true` and point the config at
 its outputs).
+
+> **Deep time (beyond ~250 Ma).** The shipped COB line-segment dataset is a
+> *present-day* set reconstructed with the plate model, and it represents
+> **Mesozoic–Cenozoic** passive margins. For older reconstructions (pre-Pangea
+> breakup) it no longer captures the passive margins that existed then, so
+> distances would be measured to the wrong boundaries. For deep-time
+> paleobathymetry you should **switch continent contouring on**: it identifies
+> passive-margin segments *dynamically at each time step* (contour the
+> reconstructed continental crust, then remove segments near subduction zones)
+> and produces a suitable time-dependent proximity file. Run the EarthByte
+> [continent-contouring](https://github.com/EarthByte/continent-contouring)
+> workflow, set `proximity.use_continent_contouring: true`, and point
+> `continent_contouring.passive_margin_features` / `continent_contour_features`
+> at its outputs. The workflow prints a reminder if you request times beyond
+> ~250 Ma with contouring still off.
 
 ### Step 3 — Predicted sediment thickness
 
@@ -290,7 +332,7 @@ workflow will use your new fit unchanged.
 **Input:** the basement-depth grids (Step 1) and the sediment-thickness grids
 (Step 3).
 **Output:** `output/Paleobathymetry/paleobathymetry_<t>Ma.nc` — the final
-sediment-covered seafloor depth (metres, negative down).
+sediment-covered ocean-floor depth (metres, negative down).
 
 Adding a sediment pile of thickness `h` on top of the basement does *not* raise
 the seafloor by the full `h`, because the added weight pushes the crust down
@@ -328,7 +370,8 @@ is a summary of the main blocks.
 | | `anchor_plate_id` | Plate held fixed in the reconstruction reference frame (default `0` = the model's absolute frame). Controls how ocean floor is reconstructed through time in Step 2. |
 | `time` | `min`, `max`, `step` | Reconstruction times (Ma) to compute. |
 | | `max_reconstruction_time` | Do not reconstruct ocean floor older than this; `null` = use the plate model's limit. |
-| `proximity` | `use_continent_contouring` | `false` (default, off): distance to the model's continental COBs (the same COBs used for age gridding; line segments or COB polygons both work). `true`: use dynamically contoured passive margins. |
+| `proximity` | `use_continent_contouring` | `false` (default, off): distance to the COB line segments in `cob_line_segments`. `true`: use dynamically contoured passive margins. |
+| | `cob_line_segments` | Path to the passive-margin **COB line-segment** file (default: the dataset shipped in `data/`). Must be polylines along passive margins — **not** COB polygons. |
 | | `use_continent_obstacles` | `true` (default): shortest path *around* continents. `false`: straight great-circle distance. |
 | | `clamp_mean_distance_km` | Cap on distance to margin (default 3000 km; see Step 2). |
 | `grids` | `internal_spacing` | Grid spacing used for the internal distance computation (coarser = faster). |
@@ -345,8 +388,9 @@ is a summary of the main blocks.
 ### Plate model — Plate Model Manager or your own files
 
 By default the workflow fetches the **Zahirovic2022** model from the GPlately
-Plate Model Manager (PMM), which supplies rotations, topologies, coastlines,
-continent-ocean boundaries (COBs) and age grids automatically:
+Plate Model Manager (PMM), which supplies rotations, topologies, coastlines and
+age grids automatically. (The passive-margin COB **line segments** do not come
+from the PMM — they are the dataset shipped in `data/`; see Step 2.)
 
 ```yaml
 plate_model:
@@ -361,9 +405,11 @@ python -c "from plate_model_manager import PlateModelManager as M; print(M().get
 ```
 
 To use **your own plate model** instead, set `use_pmm: false`, fill in the
-`local:` block (rotation, topology, coastline and COB files), set
+`local:` block (rotation, topology and coastline files), set
 `age_grids.source: local`, and give an age-grid `local_template` (using
-`{time}` for the reconstruction age in Ma).
+`{time}` for the reconstruction age in Ma). The COB line segments are set
+separately under `proximity.cob_line_segments` and are independent of the plate
+model.
 
 ---
 
@@ -373,7 +419,7 @@ To use **your own plate model** instead, set `use_pmm: false`, fill in the
 
 - a **plate model**: rotation files and topological features;
 - **seafloor-age grids**, one per reconstruction time;
-- **passive-margin features** (continental COBs — line segments or polygons — or contoured margins);
+- **passive-margin COB line segments** (shipped in `data/`; or contoured margins);
 - **continent obstacles** (coastlines) for the shortest-path distance;
 - the shipped **RHCW18 age-depth table** (only for the `rhcw18` model).
 
@@ -433,6 +479,12 @@ clamped there (`proximity.clamp_mean_distance_km`). See Step 2.
 `run.steps`. For example, once distances exist you can re-run just Step 3 and
 Step 4 after changing the sediment-thickness constants.
 
+**Do I need to supply COB features?** No — a default passive-margin COB
+line-segment dataset ships in `data/` and is used automatically. Override it via
+`proximity.cob_line_segments` only if your plate model has severely altered COB
+outlines (the Clennett / Alfonso family), or if you have a more appropriate COB
+line-segment set. Do **not** point it at COB polygons (see Step 2).
+
 **Do I need the internet?** Only when using the PMM (`use_pmm: true`), which
 downloads and caches the plate model and age grids on first use. With a local
 plate model and local age grids the workflow runs offline.
@@ -466,6 +518,12 @@ plate model and local age grids the workflow runs offline.
 - **Sykes, T.J.S. (1996).** A correction for sediment load upon the ocean floor:
   uniform versus varying sediment density estimations. *Marine Geology*, 133,
   35–49. *(Isostatic sediment-load correction.)*
+- **Müller, R.D., Seton, M., Zahirovic, S., Williams, S.E., Matthews, K.J.,
+  Wright, N.M., Shephard, G.E., Maloney, K.T., Barnett-Moore, N., Hosseinpour,
+  M., Bower, D.J. & Cannon, J. (2016).** Ocean basin evolution and global-scale
+  plate reorganization events since Pangea breakup. *Annual Review of Earth and
+  Planetary Sciences*, 44, 107–138. *(Shipped present-day COB line-segment
+  dataset, `data/Global_EarthByte_GPlates_PresentDay_COBs.gpmlz`.)*
 
 ---
 
