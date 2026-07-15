@@ -387,6 +387,7 @@ is a summary of the main blocks.
 | `features` | `use_lips`, `use_seamounts` | Off by default; reserved for extensions. |
 | `run` | `predicting_sediment_thickness_dir` | Where the public sediment-thickness engine lives (default `submodules/…`). |
 | | `output_dir`, `num_cpus` | Output location and parallelism. |
+| | `mask_continents` | `true` (default): blank continents in every output using the age-grid mask (see below). |
 | | `steps` | Turn each of the four steps on/off individually. |
 
 ### Plate model — Plate Model Manager or your own files
@@ -436,6 +437,19 @@ output/
 ├── SedimentThickness/   sediment_thickness_<t>Ma.nc       (Step 3)
 └── Paleobathymetry/     paleobathymetry_<t>Ma.nc          (Step 4)  ← final product
 ```
+
+### Continental masking (on by default)
+
+Every product describes **ocean crust only**. The seafloor-age grids define
+where ocean crust exists — cells with no age (`NaN`) are continental crust / no
+ocean floor. The workflow propagates that mask to **every** output grid
+(basement depth, distance, sediment thickness, paleobathymetry), so continents
+are always blank. Basement depth (Step 1) gets `NaN` directly from the age→depth
+conversion; the distance and sediment-thickness grids are additionally masked
+with the age-grid mask (nearest-neighbour, so the coastline stays crisp); and
+paleobathymetry inherits `NaN` from the masked basement + sediment grids. Turn
+this off with `run.mask_continents: false` only if you deliberately want values
+over continental crust.
 
 ---
 

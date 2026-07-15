@@ -1,0 +1,125 @@
+# =============================================================================
+# Tethys sediment-thickness configuration
+# =============================================================================
+# Used by:  python compute_sediment_thickness.py
+#
+# This drives the simple_paleobathymetry engine (../run_paleobathymetry.py) for
+# the LOCAL Tethys deforming plate model. First pass = sediment thickness only
+# (distance-to-margin grids + predicted sediment thickness), 0-100 Ma.
+#
+# All relative paths are resolved from the Tethys/ folder (the compute script
+# changes into its own directory before running).
+# =============================================================================
+
+
+# ---- Plate model (LOCAL files, not the Plate Model Manager) -----------------
+plate_model:
+  use_pmm: false
+  name: tethys
+  data_dir: plate_model
+  anchor_plate_id: 0          # plate held fixed in the reconstruction frame (Step 2)
+
+  local:
+    rotation_files:
+      - plate_model/CombinedRotation.rot
+
+    # >>> PLEASE CONFIRM THIS LIST <<<
+    # Files needed to resolve the deforming topologies through time. I included
+    # the plate-boundary, deforming-network and topological line/point files, plus
+    # Feature_Geometries.gpml (it typically holds the boundary-section geometries
+    # that the topologies reference). If your model resolves topologies from a
+    # different set, edit this list. (Coastlines / continental & static polygons /
+    # COB terranes / isochrons are intentionally NOT here.)
+    topology_files:
+      - plate_model/Plate_Boundaries.gpml
+      - plate_model/Deforming_Networks_Active.gpml
+      - plate_model/Deforming_Networks_Inactive.gpml
+      - plate_model/Topological_lines.gpml
+      - plate_model/Topological_Points.gpml
+      - plate_model/Feature_Geometries.gpml
+      - plate_model/SA_Iran_Eurasia_Deformation Network.gpml
+      - plate_model/Iran-Afghan_Topological Points.gpml
+      - plate_model/Iran-Afghan-Turan_Topological Line.gpml
+      - plate_model/Sabzevar-Sistan_Topological Line.gpml
+      - plate_model/SCI_Subduction_points.gpml
+      - plate_model/SCI_Subduction_Topological_lines.gpml
+
+    coastline_files:          # used as continent obstacles (shortest-path routing)
+      - plate_model/Global_coastlines_low_res.gpml
+
+
+# ---- Time range (Ma) --------------------------------------------------------
+time:
+  min: 0
+  max: 100
+  step: 1
+  # Cap on how far back ocean floor is reconstructed when averaging distance over
+  # each parcel's lifetime. The age grids / rotations run to ~230 Ma, so parcels
+  # older than this are averaged over the reconstructable window only.
+  max_reconstruction_time: 230
+
+
+# ---- Passive-margin proximity source ---------------------------------------
+proximity:
+  use_continent_contouring: false
+  # COB LINE SEGMENTS (polylines, passive margins only). This Tethys model ships
+  # the canonical GeeK07 COB line-segment file, so we point straight at it.
+  cob_line_segments: InputData/Global_EarthByte_GeeK07_COBLineSegments_2016_v4.gpmlz
+
+  continent_contouring:
+    passive_margin_features: null
+    continent_contour_features: null
+
+  use_continent_obstacles: true                 # shortest path around continents
+  plate_boundary_obstacles: [MidOceanRidge, SubductionZone]
+  clamp_mean_distance_km: 3000                   # calibrated range of the sediment fit
+
+
+# ---- Grid spacing (degrees) -------------------------------------------------
+grids:
+  internal_spacing: 0.5     # spacing of the internal distance reconstruction (coarser = faster)
+  output_spacing: 0.1       # spacing of the output grids (matches the age grids)
+
+
+# ---- Age grids (LOCAL) ------------------------------------------------------
+age_grids:
+  source: local
+  # {time:.0f} -> 0, 1, ... 100  (files are agegrid_final_mask_<t>.nc)
+  local_template: "Agegrids/agegrid_final_mask_{time:.0f}.nc"
+
+
+# ---- Sediment-thickness relationship (Dutkiewicz et al., 2017) --------------
+sediment_thickness:
+  max_age: 191.87276
+  mean_age: 61.18406823
+  mean_distance: 1835.28118479
+  variance_age: 1934.6999014
+  variance_distance: 1207521.8995806
+  max_distance: 3000
+  polynomial_coefficients:
+    [5.441401190368497, 0.46893096, -0.07320928, -0.24077496, -0.10840657,
+     0.00381672, 0.06831728, 0.01179914, 0.01158149, -0.39880562]
+
+
+# ---- Optional features (off) ------------------------------------------------
+features:
+  use_lips: false
+  use_seamounts: false
+
+
+# ---- Runtime ----------------------------------------------------------------
+run:
+  # Public EarthByte engine providing ocean_basin_proximity.py + predict_sediment_thickness.py
+  predicting_sediment_thickness_dir: ../submodules/predicting-sediment-thickness
+  output_dir: output          # -> Tethys/output/{Distances,SedimentThickness}
+  num_cpus: 4
+
+  # Continental masking (default true): every output is blanked (NaN) over
+  # continental crust using the mask inherited from the age grids.
+  mask_continents: true
+
+  steps:
+    age_to_depth: false        # not needed for sediment thickness
+    distance_grids: true
+    sediment_thickness: true
+    paleobathymetry: false     # first pass = sediment thickness only

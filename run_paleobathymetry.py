@@ -118,6 +118,32 @@ def _write_zgrid(path, z, lon, lat):
     ds.close()
 
 
+# --- Continental masking (inherited from the age grids) ----------------------
+# Every product of this workflow describes OCEAN CRUST only. The seafloor-age
+# grids define where ocean crust exists: cells with no age (NaN) are continental
+# crust / no ocean floor. We propagate that NaN mask to every output grid so
+# continents are always blank. This is on by default (run.mask_continents).
+
+def _ocean_mask_on(age_path, lon, lat):
+    """Boolean ocean mask (True where the age grid is defined) on target lon/lat.
+
+    Uses nearest-neighbour resampling so the continent/ocean boundary stays crisp
+    (a linear interp would bleed NaNs inward).
+    """
+    age = _load_zgrid(age_path)
+    finite = np.isfinite(age).astype("float64")
+    m = finite.interp(lon=np.asarray(lon), lat=np.asarray(lat), method="nearest")
+    return np.asarray(m.data) >= 0.5
+
+
+def _mask_file_with_age(path, age_path):
+    """Set NaN in the grid at `path` wherever the age grid has no ocean crust."""
+    da = _load_zgrid(path)
+    mask = _ocean_mask_on(age_path, da["lon"].data, da["lat"].data)
+    z = np.where(mask, np.asarray(da.data, dtype="float64"), np.nan)
+    _write_zgrid(path, z, da["lon"].data, da["lat"].data)
+
+
 # =============================================================================
 # Plate model (GPlately Plate Model Manager, or local files)
 # =============================================================================
@@ -510,6 +536,14 @@ def step_distance_grids(cfg, model, times, out_dir):
             generate_and_write_proximity_data_parallel(**kwargs)
         else:
             raise
+
+    # Continental mask (default on): blank out anything that is not ocean crust
+    # in the age grid, so the distance grids are ocean-only.
+    if cfg["run"].get("mask_continents", True):
+        for t in times:
+            dpath = os.path.join(out_dir, "mean_distance_{:.1f}d_{:.1f}.nc".format(output, t))
+            if os.path.isfile(dpath):
+                _mask_file_with_age(dpath, model["age_grid"](t))
     log("STEP 2 done -> {}".format(out_dir))
 
 
@@ -533,6 +567,8 @@ def step_sediment_thickness(cfg, model, times, distance_dir, out_dir):
         distance_dir, "mean_distance_{:.1f}d".format(output) + "_{:.1f}.nc"
     )
 
+    mask_continents = cfg["run"].get("mask_continents", True)
+
     def _one(t):
         result = predict_sedimentation(
             input_points=input_points,
@@ -546,13 +582,18 @@ def step_sediment_thickness(cfg, model, times, distance_dir, out_dir):
             max_age=st.get("max_age"),
             max_distance=st.get("max_distance"),
         )
+        out_path = os.path.join(out_dir, "sediment_thickness_{:.0f}Ma.nc".format(t))
         write_grd_file(
-            os.path.join(out_dir, "sediment_thickness_{:.0f}Ma.nc".format(t)),
+            out_path,
             output_data=result,
             grid_spacing=output,
             num_grid_longitudes=None,
             num_grid_latitudes=None,
         )
+        # Continental mask (default on): sediment thickness is defined over ocean
+        # crust only, so blank it wherever the age grid has no ocean floor.
+        if mask_continents:
+            _mask_file_with_age(out_path, model["age_grid"](t))
 
     n_jobs = int(cfg["run"].get("num_cpus", 1))
     with joblib.Parallel(n_jobs=n_jobs) as parallel:

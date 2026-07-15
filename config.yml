@@ -156,6 +156,13 @@ run:
   predicting_sediment_thickness_dir: submodules/predicting-sediment-thickness
   output_dir: output
   num_cpus: 4
+
+  # Continental masking (default true). Every output describes OCEAN CRUST only,
+  # so continents (cells with no seafloor age) are blanked (NaN) using the mask
+  # inherited from the age grids. Set false only if you deliberately want values
+  # extrapolated over continental crust.
+  mask_continents: true
+
   steps:                  # turn individual steps on/off (useful for re-runs)
     age_to_depth: true
     distance_grids: true
