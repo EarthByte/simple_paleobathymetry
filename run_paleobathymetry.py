@@ -502,12 +502,20 @@ def step_distance_grids(cfg, model, times, out_dir):
     if clamp_km:
         clamp_radians = float(clamp_km) / pygplates.Earth.mean_radius_in_kms
 
+    # Optional filter: restrict the proximity target to specific feature types
+    # (qualified names, e.g. 'gpml:PassiveContinentalBoundary'). Use this when the
+    # COB file also contains features that are NOT passive margins (e.g. isochrons)
+    # which would otherwise create false near-margin distances. null = use all.
+    prox_feature_types = cfg["proximity"].get("proximity_feature_types", None)
+    if prox_feature_types:
+        log("  restricting proximity features to: {}".format(prox_feature_types))
+
     kwargs = dict(
         input_points=input_points,
         rotation_filenames=model["rotation_files"],
         proximity_filenames=proximity_files,
         proximity_features_are_topological=False,
-        proximity_feature_types=None,
+        proximity_feature_types=prox_feature_types,
         topological_reconstruction_filenames=model["topology_files"],
         age_grid_filenames_and_paleo_times=age_grid_filenames_and_paleo_times,
         time_increment=1,

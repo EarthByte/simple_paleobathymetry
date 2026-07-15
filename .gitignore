@@ -14,3 +14,9 @@ __pycache__/
 # Environments
 .venv/
 env/
+
+# Local testing only (not part of the public workflow)
+Tethys/
+
+# Cloned sediment-thickness engine (users clone it themselves; see README)
+submodules/predicting-sediment-thickness/
