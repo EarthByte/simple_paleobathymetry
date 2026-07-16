@@ -245,6 +245,27 @@ segments, point that setting at your file (it stays independent of the plate
 model). As a safeguard, the workflow inspects the proximity features at run time
 and **warns if it finds polygons** rather than line segments.
 
+> **⚠️ Completeness of paleo-COBs — read this before choosing a method.**
+> The distance-to-passive-margin grid (and therefore the predicted sediment
+> thickness that depends on it) is only as complete as the set of passive
+> margins it measures distance to. A *static* COB line-segment file is a **fixed
+> list of margins**: any passive margin that is missing from that file — or that
+> did not yet exist at present day but existed in the past — is simply never seen
+> by the algorithm, so ocean floor near it is assigned a distance to some *other,
+> farther* margin and its sediment thickness comes out wrong. Static COB files
+> routinely omit paleo-margins (rifts that later closed, margins consumed by
+> subduction, or margins the compiler simply did not digitise).
+>
+> **Continent contouring is the only method that guarantees every paleo-COB is
+> found and used**, because it *re-derives* the passive margins from the
+> reconstructed continents at each time step rather than reading them from a
+> fixed list — so a margin that existed at 120 Ma but not today is still
+> contoured and used at 120 Ma. **If you do not use continent contouring, it is
+> your responsibility to supply a `cob_line_segments` file that already contains
+> every relevant paleo-COB for your time range;** the shipped present-day dataset
+> does not, beyond the Mesozoic–Cenozoic. When in doubt, switch continent
+> contouring on.
+
 Continent contouring is **off by default**, so no extra preprocessing is needed.
 
 **Optional: dynamically contoured passive margins.** Instead of the static COB
