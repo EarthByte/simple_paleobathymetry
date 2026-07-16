@@ -162,35 +162,22 @@ def _resolve_plate_inputs(cfg):
     return rotation_files, topology_files, continent_files, anchor
 
 
-def generate_contours(cfg, log=print):
-    """Dynamically contour continents through time; write passive-margin /
-    contour / mask files. Returns (passive_margin_path, contour_features_path).
+def _build_contourer_and_models(rotation_files, topology_files, continent_files,
+                                anchor, gen, earth_r):
+    """Build the gplately ContinentContouring engine and the pygplates objects a
+    single time step needs, from picklable primitives.
 
-    `cfg` is the already-parsed workflow config dict. Uses:
-        plate_model.{use_pmm, name, data_dir, anchor_plate_id, local.rotation_files,
-        local.topology_files}
-        proximity.continent_contouring.generate.*   (parameters below)
-        time.{min,max,step}
-        run.output_dir
+    Kept separate from generate_contours() so it can run either once in the main
+    process (sequential path) or once per worker process (parallel path, via the
+    pool initializer) -- pygplates objects are not picklable, so each worker
+    rebuilds them from the input file paths rather than receiving them.
+
+    Returns (contourer, rotation_model, topology_features, max_sub_rad).
     """
     import pygplates
-    import gplately
     from gplately.ptt import continent_contours
 
-    prox = cfg["proximity"]
-    cc_cfg = (prox.get("continent_contouring", {}) or {})
-    gen = (cc_cfg.get("generate", {}) or {})
-
-    # --- plate-model inputs -------------------------------------------------
-    rotation_files, topology_files, continent_files, anchor = _resolve_plate_inputs(cfg)
-
-    # --- time range ---------------------------------------------------------
-    t = cfg["time"]
-    start, end, step = int(t["min"]), int(t["max"]), int(t.get("step", 1))
-    times = list(range(start, end + 1, step))
-
     # --- contouring parameters (with sensible defaults) --------------------
-    earth_r = pygplates.Earth.mean_radius_in_kms
     spacing = float(gen.get("point_spacing_degrees", 0.25))
     area_km2 = gen.get("area_threshold_square_kms", None)
     if area_km2 is not None:
@@ -213,15 +200,9 @@ def generate_contours(cfg, log=print):
     max_sub_km = float(gen.get("max_distance_of_subduction_from_active_margin_kms", 500.0))
     max_sub_rad = max_sub_km / earth_r
 
-    out_dir = _contour_output_dir(cfg)
-    os.makedirs(out_dir, exist_ok=True)
-
     rotation_model = pygplates.RotationModel(rotation_files, default_anchor_plate_id=anchor)
     continent_features = _feature_collection(continent_files)
     topology_features = _feature_collection(topology_files) if topology_files else None
-
-    log("[contours] contouring {} times ({}-{} Ma), spacing {} deg -> {}".format(
-        len(times), start, end, spacing, out_dir))
 
     # --- the contouring engine (in gplately) --------------------------------
     contourer = continent_contours.ContinentContouring(
@@ -233,55 +214,151 @@ def generate_contours(cfg, log=print):
         continent_exclusion_area_threshold_steradians=exclusion_area_sr,
         continent_separation_distance_threshold_radians=separation_rad,
     )
+    return contourer, rotation_model, topology_features, max_sub_rad
 
+
+def _contour_single_time(time, contourer, rotation_model, topology_features,
+                         max_sub_rad, step, out_dir):
+    """Contour continents at one `time`; write its contour / passive-margin / mask
+    files. Returns (num_contour_features, num_passive_margin_features).
+    """
+    import pygplates
+    import gplately
+
+    # subduction-zone lines at this time (to mark active margins)
+    subduction_lines = []
+    if topology_features is not None:
+        resolved, shared = [], []
+        pygplates.resolve_topologies(topology_features, rotation_model,
+                                     resolved, float(time), shared)
+        for sbs in shared:
+            if (sbs.get_feature().get_feature_type()
+                    == pygplates.FeatureType.gpml_subduction_zone):
+                for seg in sbs.get_shared_sub_segments():
+                    subduction_lines.append(seg.get_resolved_geometry())
+
+    continent_mask, contoured_continents = \
+        contourer.get_continent_mask_and_contoured_continents(float(time))
+
+    contour_feats, passive_feats = [], []
+    for continent in contoured_continents:
+        for contour in continent.get_contours():
+            cf = pygplates.Feature()
+            cf.set_geometry(contour)
+            cf.set_valid_time(time + 0.5 * step, time - 0.5 * step)
+            contour_feats.append(cf)
+
+            # Passive margin = contour minus segments near a subduction zone.
+            for margin in _passive_margin_polylines(contour, subduction_lines,
+                                                    max_sub_rad, pygplates):
+                pf = pygplates.Feature()
+                pf.set_geometry(margin)
+                pf.set_valid_time(time + 0.5 * step, time - 0.5 * step)
+                passive_feats.append(pf)
+
+    pygplates.FeatureCollection(contour_feats).write(
+        os.path.join(out_dir, "continent_contour_features_{}.gpml".format(time)))
+    pygplates.FeatureCollection(passive_feats).write(
+        os.path.join(out_dir, "passive_margin_features_{}.gpml".format(time)))
+    try:
+        gplately.grids.write_netcdf_grid(
+            os.path.join(out_dir, "continent_mask_{}.nc".format(time)),
+            continent_mask.astype("float"))
+    except Exception as exc:
+        print("[contours]  (continent mask nc for {} Ma skipped: {})".format(time, exc))
+
+    return len(contour_feats), len(passive_feats)
+
+
+# Per-process cache of the (heavy, ~50 MB) contouring engine + models. The
+# engine itself is not picklable by the stdlib (ContinentContouring stashes local
+# closures on the instance) and the rotation/topology data are large, so we never
+# ship them across the joblib worker boundary. Instead each worker builds them
+# ONCE, keyed on the build inputs, and reuses them for every time it handles --
+# tasks carry only small picklable inputs (file paths, params, an integer time).
+_WORKER_CONTOURER_CACHE = {}
+
+
+def _cached_contourer_and_models(rotation_files, topology_files, continent_files,
+                                 anchor, gen, earth_r):
+    key = repr((rotation_files, topology_files, continent_files, anchor, gen, earth_r))
+    cached = _WORKER_CONTOURER_CACHE.get(key)
+    if cached is None:
+        cached = _build_contourer_and_models(
+            rotation_files, topology_files, continent_files, anchor, gen, earth_r)
+        _WORKER_CONTOURER_CACHE.clear()   # keep at most one engine resident
+        _WORKER_CONTOURER_CACHE[key] = cached
+    return cached
+
+
+def generate_contours(cfg, log=print):
+    """Dynamically contour continents through time; write passive-margin /
+    contour / mask files. Returns (passive_margin_path, contour_features_path).
+
+    The per-time contouring is independent across times, so it is distributed
+    across run.num_cpus workers with joblib (n_jobs=1 runs in-process). Each task
+    carries only small picklable inputs; the heavy contouring engine is built once
+    per worker and cached (see _cached_contourer_and_models).
+
+    `cfg` is the already-parsed workflow config dict. Uses:
+        plate_model.{use_pmm, name, data_dir, anchor_plate_id, local.rotation_files,
+        local.topology_files}
+        proximity.continent_contouring.generate.*   (parameters below)
+        time.{min,max,step}
+        run.{output_dir, num_cpus}
+    """
+    import pygplates
+    import joblib
+
+    prox = cfg["proximity"]
+    cc_cfg = (prox.get("continent_contouring", {}) or {})
+    gen = (cc_cfg.get("generate", {}) or {})
+
+    # --- plate-model inputs -------------------------------------------------
+    rotation_files, topology_files, continent_files, anchor = _resolve_plate_inputs(cfg)
+
+    # --- time range ---------------------------------------------------------
+    t = cfg["time"]
+    start, end, step = int(t["min"]), int(t["max"]), int(t.get("step", 1))
+    times = list(range(start, end + 1, step))
+
+    earth_r = pygplates.Earth.mean_radius_in_kms
+    spacing = float(gen.get("point_spacing_degrees", 0.25))  # for the log line
+
+    out_dir = _contour_output_dir(cfg)
+    os.makedirs(out_dir, exist_ok=True)
+
+    n_jobs = int(cfg.get("run", {}).get("num_cpus", 1))
+    log("[contours] contouring {} times ({}-{} Ma), spacing {} deg, {} job(s) -> {}".format(
+        len(times), start, end, spacing, n_jobs, out_dir))
+
+    def _one(time):
+        contourer, rotation_model, topology_features, max_sub_rad = \
+            _cached_contourer_and_models(rotation_files, topology_files,
+                                         continent_files, anchor, gen, earth_r)
+        return (time,) + _contour_single_time(
+            time, contourer, rotation_model, topology_features,
+            max_sub_rad, step, out_dir)
+
+    with joblib.Parallel(n_jobs=n_jobs) as parallel:
+        results = parallel(joblib.delayed(_one)(t) for t in times)
+
+    for time, n_contours, n_passive in results:
+        log("[contours]  {:>4} Ma: {} contour + {} passive-margin features".format(
+            time, n_contours, n_passive))
+
+    # Aggregate the per-time feature files (written by _contour_single_time) into
+    # the two collections the workflow consumes. Reading them back keeps the
+    # aggregation deterministic/time-ordered regardless of worker finish order,
+    # and avoids shipping unpicklable pygplates features out of the workers.
     all_contours, all_passive = [], []
     for time in times:
-        # subduction-zone lines at this time (to mark active margins)
-        subduction_lines = []
-        if topology_features is not None:
-            resolved, shared = [], []
-            pygplates.resolve_topologies(topology_features, rotation_model,
-                                         resolved, float(time), shared)
-            for sbs in shared:
-                if (sbs.get_feature().get_feature_type()
-                        == pygplates.FeatureType.gpml_subduction_zone):
-                    for seg in sbs.get_shared_sub_segments():
-                        subduction_lines.append(seg.get_resolved_geometry())
-
-        continent_mask, contoured_continents = \
-            contourer.get_continent_mask_and_contoured_continents(float(time))
-
-        contour_feats, passive_feats = [], []
-        for continent in contoured_continents:
-            for contour in continent.get_contours():
-                cf = pygplates.Feature()
-                cf.set_geometry(contour)
-                cf.set_valid_time(time + 0.5 * step, time - 0.5 * step)
-                contour_feats.append(cf)
-
-                # Passive margin = contour minus segments near a subduction zone.
-                for margin in _passive_margin_polylines(contour, subduction_lines,
-                                                        max_sub_rad, pygplates):
-                    pf = pygplates.Feature()
-                    pf.set_geometry(margin)
-                    pf.set_valid_time(time + 0.5 * step, time - 0.5 * step)
-                    passive_feats.append(pf)
-
-        pygplates.FeatureCollection(contour_feats).write(
-            os.path.join(out_dir, "continent_contour_features_{}.gpml".format(time)))
-        pygplates.FeatureCollection(passive_feats).write(
-            os.path.join(out_dir, "passive_margin_features_{}.gpml".format(time)))
-        try:
-            gplately.grids.write_netcdf_grid(
-                os.path.join(out_dir, "continent_mask_{}.nc".format(time)),
-                continent_mask.astype("float"))
-        except Exception as exc:
-            log("[contours]  (continent mask nc for {} Ma skipped: {})".format(time, exc))
-
-        all_contours.extend(contour_feats)
-        all_passive.extend(passive_feats)
-        log("[contours]  {:>4} Ma: {} contour + {} passive-margin features".format(
-            time, len(contour_feats), len(passive_feats)))
+        cf_path = os.path.join(out_dir, "continent_contour_features_{}.gpml".format(time))
+        pf_path = os.path.join(out_dir, "passive_margin_features_{}.gpml".format(time))
+        if os.path.isfile(cf_path):
+            all_contours.extend(pygplates.FeatureCollection(cf_path))
+        if os.path.isfile(pf_path):
+            all_passive.extend(pygplates.FeatureCollection(pf_path))
 
     passive_path, contour_path = aggregated_feature_paths(cfg)
     pygplates.FeatureCollection(all_contours).write(contour_path)

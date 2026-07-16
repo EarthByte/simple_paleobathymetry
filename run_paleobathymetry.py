@@ -357,13 +357,19 @@ def step_age_to_depth(cfg, model, times, out_dir):
     spacing = float(cfg["grids"]["output_spacing"])
     lon, lat = target_grid(spacing)
 
-    for t in times:
+    import joblib
+
+    def _one(t):
         age_path = model["age_grid"](t)
         age_da = _load_zgrid(age_path).interp(lon=lon, lat=lat)
         depth = convert_age_to_depth(age_da.data, model=depth_model,
                                      richards_table_path=richards_path)
         out_path = os.path.join(out_dir, "basement_depth_{:.0f}Ma.nc".format(t))
         _write_zgrid(out_path, depth, lon, lat)
+
+    n_jobs = int(cfg["run"].get("num_cpus", 1))
+    with joblib.Parallel(n_jobs=n_jobs) as parallel:
+        parallel(joblib.delayed(_one)(t) for t in times)
     log("STEP 1 done -> {}".format(out_dir))
 
 
