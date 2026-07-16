@@ -34,13 +34,10 @@
 #
 # Requires: pygplates + gplately (already workflow dependencies).
 #
-# NOTE: this reproduces the EarthByte create_passive_margins.py logic; the exact
-# gplately.ptt.continent_contours API can vary between gplately versions, so
-# validate the first run and adjust the flagged calls if your gplately differs.
+# NOTE: this reproduces the EarthByte create_passive_margins.py logic.
 # -----------------------------------------------------------------------------
 
 import os
-import sys
 import argparse
 
 import yaml
@@ -57,6 +54,39 @@ def _feature_collection(paths):
     for p in paths:
         fc.add(pygplates.FeatureCollection(p))
     return fc
+
+
+def _make_buffer_and_gap_ramp(ramp_cfg, earth_r):
+    """Deep-time buffer/gap ramp (opt-in), ported from the commented-out
+    continent_contouring_buffer_and_gap_distance_radians() function in
+    EarthByte's create_passive_margins.py: a larger buffer/gap distance before
+    Pangea assembly, linearly interpolated down to a smaller one after, then
+    linearly reduced for continents smaller than an area threshold.
+    """
+    import math
+
+    pre_rad = math.radians(float(ramp_cfg.get("pre_pangea_distance_degrees", 2.5)))
+    post_rad = math.radians(float(ramp_cfg.get("post_pangea_distance_degrees", 0.0)))
+    pre_time = float(ramp_cfg.get("pre_pangea_time_ma", 300))
+    post_time = float(ramp_cfg.get("post_pangea_time_ma", 250))
+    area_threshold_sr = (float(ramp_cfg.get("small_continent_area_threshold_square_kms", 500000))
+                          / (earth_r * earth_r))
+
+    def buffer_and_gap(time, contoured_continent):
+        if time > pre_time:
+            distance_rad = pre_rad
+        elif time < post_time:
+            distance_rad = post_rad
+        else:
+            interp = float(time - post_time) / (pre_time - post_time)
+            distance_rad = interp * pre_rad + (1 - interp) * post_rad
+
+        area_sr = contoured_continent.get_area()
+        if area_sr < area_threshold_sr:
+            distance_rad *= area_sr / area_threshold_sr
+        return distance_rad
+
+    return buffer_and_gap
 
 
 def _contour_output_dir(cfg):
@@ -77,13 +107,68 @@ def aggregated_feature_paths(cfg):
             os.path.join(out_dir, "continent_contour_features.gpmlz"))
 
 
+def _resolve_plate_inputs(cfg):
+    """Resolve (rotation_files, topology_files, continent_files, anchor) for
+    contouring, from either a PMM plate model or local plate-model files --
+    mirrors run_paleobathymetry.load_plate_model().
+
+    Continental polygons: proximity.continent_contouring.generate.continent_polygon_files
+    overrides when given; otherwise, for a PMM model, they are auto-sourced from
+    model.get_continental_polygons(). A local model always requires them explicitly.
+    """
+    prox = cfg["proximity"]
+    cc_cfg = (prox.get("continent_contouring", {}) or {})
+    gen = (cc_cfg.get("generate", {}) or {})
+
+    pm = cfg["plate_model"]
+    anchor = int(pm.get("anchor_plate_id", 0))
+    continent_files = list(gen.get("continent_polygon_files", []) or [])
+
+    if pm.get("use_pmm", True):
+        from plate_model_manager import PlateModelManager
+
+        name = pm["name"]
+        pmm = PlateModelManager()
+        model = pmm.get_model(name, data_dir=pm.get("data_dir", "plate_model"))
+        rotation_files = list(model.get_rotation_model() or [])
+        topology_files = list(model.get_topologies() or [])
+        if not continent_files:
+            continent_files = list(
+                model.get_continental_polygons(return_none_if_not_exist=True) or [])
+        if not continent_files:
+            raise ValueError(
+                "continent contouring needs continental polygons, but PMM model "
+                "'{}' does not provide any and "
+                "proximity.continent_contouring.generate.continent_polygon_files "
+                "is empty. Supply continent_polygon_files explicitly.".format(name))
+        local_paths = []  # PMM paths are already resolved/cached; skip existence check below.
+    else:
+        local = pm.get("local", {}) or {}
+        rotation_files = list(local.get("rotation_files", []) or [])
+        topology_files = list(local.get("topology_files", []) or [])
+        if not rotation_files:
+            raise ValueError("continent contouring needs plate_model.local.rotation_files.")
+        if not continent_files:
+            raise ValueError(
+                "continent contouring needs "
+                "proximity.continent_contouring.generate.continent_polygon_files "
+                "(the continental polygons to contour).")
+        local_paths = rotation_files + continent_files + topology_files
+
+    missing = [p for p in local_paths if not os.path.isfile(p)]
+    if missing:
+        raise FileNotFoundError("continent-contouring input(s) not found: {}".format(missing))
+
+    return rotation_files, topology_files, continent_files, anchor
+
+
 def generate_contours(cfg, log=print):
     """Dynamically contour continents through time; write passive-margin /
     contour / mask files. Returns (passive_margin_path, contour_features_path).
 
     `cfg` is the already-parsed workflow config dict. Uses:
-        plate_model.anchor_plate_id, plate_model.local.rotation_files,
-        plate_model.local.topology_files
+        plate_model.{use_pmm, name, data_dir, anchor_plate_id, local.rotation_files,
+        local.topology_files}
         proximity.continent_contouring.generate.*   (parameters below)
         time.{min,max,step}
         run.output_dir
@@ -97,23 +182,7 @@ def generate_contours(cfg, log=print):
     gen = (cc_cfg.get("generate", {}) or {})
 
     # --- plate-model inputs -------------------------------------------------
-    pm = cfg["plate_model"]
-    anchor = int(pm.get("anchor_plate_id", 0))
-    local = pm.get("local", {}) or {}
-    rotation_files = list(local.get("rotation_files", []) or [])
-    topology_files = list(local.get("topology_files", []) or [])
-    continent_files = list(gen.get("continent_polygon_files", []) or [])
-    if not rotation_files:
-        raise ValueError("continent contouring needs plate_model.local.rotation_files.")
-    if not continent_files:
-        raise ValueError(
-            "continent contouring needs "
-            "proximity.continent_contouring.generate.continent_polygon_files "
-            "(the continental polygons to contour).")
-    missing = [p for p in rotation_files + continent_files + topology_files
-               if not os.path.isfile(p)]
-    if missing:
-        raise FileNotFoundError("continent-contouring input(s) not found: {}".format(missing))
+    rotation_files, topology_files, continent_files, anchor = _resolve_plate_inputs(cfg)
 
     # --- time range ---------------------------------------------------------
     t = cfg["time"]
@@ -128,14 +197,19 @@ def generate_contours(cfg, log=print):
         area_threshold_sr = float(area_km2) / (earth_r * earth_r)
     else:
         area_threshold_sr = float(gen.get("area_threshold_steradians", 0.0))
-    buffer_gap_km = gen.get("buffer_and_gap_distance_kms", 0.0)
-    buffer_gap_rad = float(buffer_gap_km) / earth_r if buffer_gap_km else 0.0
+    buffer_and_gap_mode = str(gen.get("buffer_and_gap_mode", "constant")).lower()
+    if buffer_and_gap_mode == "ramp":
+        buffer_gap_rad = _make_buffer_and_gap_ramp(gen.get("buffer_and_gap_ramp", {}) or {}, earth_r)
+    else:
+        buffer_gap_km = gen.get("buffer_and_gap_distance_kms", 0.0)
+        buffer_gap_rad = float(buffer_gap_km) / earth_r if buffer_gap_km else 0.0
     excl_km2 = gen.get("exclusion_area_threshold_square_kms", None)
     if excl_km2 is not None:
         exclusion_area_sr = float(excl_km2) / (earth_r * earth_r)
     else:
-        exclusion_area_sr = float(gen.get("exclusion_area_threshold_steradians", 0.0))
-    separation_rad = float(gen.get("separation_distance_threshold_radians", float("inf")))
+        exclusion_area_sr = float(gen.get("exclusion_area_threshold_steradians", 800000.0 / (earth_r * earth_r)))
+    separation_rad = float(gen.get("separation_distance_threshold_radians",
+                                    continent_contours.DEFAULT_CONTINENT_SEPARATION_DISTANCE_THRESHOLD_RADIANS))
     max_sub_km = float(gen.get("max_distance_of_subduction_from_active_margin_kms", 500.0))
     max_sub_rad = max_sub_km / earth_r
 
@@ -150,7 +224,6 @@ def generate_contours(cfg, log=print):
         len(times), start, end, spacing, out_dir))
 
     # --- the contouring engine (in gplately) --------------------------------
-    # Flagged: constructor keyword names can differ between gplately versions.
     contourer = continent_contours.ContinentContouring(
         rotation_model,
         continent_features,
