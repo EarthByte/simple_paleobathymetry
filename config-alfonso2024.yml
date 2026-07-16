@@ -18,7 +18,7 @@ plate_model:
   # Option B: use your own local plate-model files.
   #   Set use_pmm: false and fill in the `local:` block below.
   use_pmm: true
-  name: zahirovic2022            # default plate model
+  name: alfonso2024            # default plate model
   data_dir: plate_model          # where PMM caches files (or where local files live)
 
   # Anchor plate: the plate held fixed in the reconstruction reference frame.
@@ -32,6 +32,7 @@ plate_model:
     rotation_files: []           #   e.g. [model/rotations.rot]
     topology_files: []           #   e.g. [model/topologies.gpml]
     coastline_files: []          #   used as continent obstacles (optional)
+    static_polygon_files: []     #   e.g. [model/static_polygons.gpml] (required by Step 5 / pyBacktrack)
     # NOTE: the passive-margin proximity target (COB line segments) is set under
     # `proximity:` below, NOT here -- it is independent of the plate model.
 
@@ -65,7 +66,7 @@ proximity:
   #   REQUIRED for deep time (beyond ~250 Ma): the shipped present-day COB line
   #   segments do not capture pre-Pangea passive margins, so contouring is used to
   #   identify passive-margin segments dynamically at each time step.
-  use_continent_contouring: false
+  use_continent_contouring: true
 
   # Passive-margin proximity target: a CLEAN set of continent-ocean-boundary
   # (COB) *line segments* (polylines) along PASSIVE margins only. The distance
@@ -97,7 +98,7 @@ proximity:
     # enabled, generation runs automatically before the distance step (Step 2),
     # and the two paths above are filled in from output_dir. Requires gplately.
     generate:
-      enabled: false
+      enabled: true
       force: false                     # true = rebuild even if outputs already exist
       # Continental polygons to contour (the continents whose margins we trace).
       # Use your plate model's continental polygons (NOT COB line segments).
@@ -198,7 +199,7 @@ run:
   # (provides ocean_basin_proximity.py and predict_sediment_thickness.py).
   predicting_sediment_thickness_dir: submodules/predicting-sediment-thickness
   output_dir: output
-  num_cpus: 4
+  num_cpus: 8
 
   # Continental masking (default true). Every output describes OCEAN CRUST only,
   # so continents (cells with no seafloor age) are blanked (NaN) using the mask
@@ -211,3 +212,4 @@ run:
     distance_grids: true
     sediment_thickness: true
     paleobathymetry: true
+    pybacktrack: true     # step 5: pyBacktrack paleobathymetry merged with step-4 grids
