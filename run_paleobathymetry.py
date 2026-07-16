@@ -5,11 +5,12 @@
 # A streamlined, config-driven workflow to reconstruct paleobathymetry of ocean
 # crust (isostatically compensated for sediment load) through geological time.
 #
-# The pipeline runs four steps:
+# The pipeline runs five steps:
 #   1. convert seafloor age to basement depth        (choice of subsidence model)
 #   2. generate distance-to-passive-margin grids     (ocean_basin_proximity)
 #   3. predict compacted sediment thickness          (Dutkiewicz et al., 2017)
 #   4. compute paleobathymetry with sediments        (Sykes, 1996 isostasy)
+#   5. pyBacktrack paleobathymetry, merged with Step 4 grids   (optional)
 #
 # Step 1 offers four age -> depth (thermal subsidence) models, selected with
 # `age_depth.model` in the config:
@@ -152,7 +153,7 @@ def load_plate_model(cfg):
     """Return a dict describing the plate model, from PMM or from local files.
 
     Keys returned:
-        rotation_files, topology_files, coastline_files,
+        rotation_files, topology_files, coastline_files, static_polygons,
         anchor_plate_id, big_time, age_grid(time)->path
 
     Note: the passive-margin proximity target (COB line segments) is NOT taken
@@ -184,6 +185,7 @@ def load_plate_model(cfg):
             rotation_files=model.get_rotation_model(),
             topology_files=model.get_topologies(),
             coastline_files=model.get_coastlines(return_none_if_not_exist=True) or [],
+            static_polygons=model.get_static_polygons(),
             anchor_plate_id=anchor,
             big_time=int(model.get_big_time()),
         )
@@ -204,6 +206,7 @@ def load_plate_model(cfg):
         rotation_files=list(local.get("rotation_files", []) or []),
         topology_files=list(local.get("topology_files", []) or []),
         coastline_files=list(local.get("coastline_files", []) or []),
+        static_polygons=list(local.get("static_polygon_files", []) or []),
         anchor_plate_id=anchor,
         big_time=None,
     )
@@ -688,13 +691,85 @@ def step_paleobathymetry(cfg, times, sedthick_dir, basement_dir, out_dir):
 
 
 # =============================================================================
+# Step 5: pyBacktrack paleobathymetry, merged with the Step 4 grids  (optional)
+#
+# pyBacktrack reconstructs paleobathymetry for crust that still exists at
+# present day (including submerged continental crust, which Steps 1-4 do not
+# cover), and merges in the Step 4 grids to fill regions of crust that has
+# since been subducted. The Step 4 grids are read-only "traditional"
+# paleobathymetry here -- this step does not modify them. Reference:
+# Müller, Cannon, Williams & Dutkiewicz (2018).
+# =============================================================================
+
+# Map this workflow's age_depth.model choice onto pyBacktrack's equivalent
+# ocean age -> depth model constant (see README, Step 1, for the model names).
+_PYBACKTRACK_AGE_DEPTH_MODELS = {
+    "gdh1": "AGE_TO_DEPTH_MODEL_GDH1",
+    "rhcw18": "AGE_TO_DEPTH_MODEL_RHCW18",
+    "crosby09": "AGE_TO_DEPTH_MODEL_CROSBY_2007",
+}
+
+
+def step_pybacktrack(cfg, model, times, paleobath_dir, pybacktrack_dir):
+    log("STEP 5: computing pyBacktrack paleobathymetry (merged with Step 4 grids) ...")
+    import pybacktrack
+
+    age_depth_model = cfg["age_depth"].get("model", "gdh1")
+    if age_depth_model not in _PYBACKTRACK_AGE_DEPTH_MODELS:
+        raise ValueError(
+            "age_depth.model '{}' has no pyBacktrack equivalent; supported "
+            "models for Step 5 are: {}".format(
+                age_depth_model, ", ".join(sorted(_PYBACKTRACK_AGE_DEPTH_MODELS))
+            )
+        )
+    ocean_age_to_depth_model = getattr(
+        pybacktrack, _PYBACKTRACK_AGE_DEPTH_MODELS[age_depth_model]
+    )
+
+    static_polygons = model.get("static_polygons") or []
+    if not static_polygons:
+        raise ValueError(
+            "No static polygons available for Step 5 (pyBacktrack). When "
+            "plate_model.use_pmm is false, set plate_model.local.static_polygon_files."
+        )
+    static_polygon_filename = (
+        static_polygons[0] if isinstance(static_polygons, (list, tuple)) else static_polygons
+    )
+
+    os.makedirs(pybacktrack_dir, exist_ok=True)
+
+    pybacktrack.reconstruct_paleo_bathymetry_grids(
+        os.path.join(pybacktrack_dir, "paleobathymetry_${time}Ma.nc"),
+        grid_spacing_degrees=cfg["grids"]["output_spacing"],
+        oldest_time=max(times),
+        youngest_time=min(times),
+        time_increment=cfg["time"].get("step", 1),
+        age_grid_filename=model["age_grid"](0),
+        rotation_filenames=model["rotation_files"],
+        static_polygon_filename=static_polygon_filename,
+        ocean_age_to_depth_model=ocean_age_to_depth_model,
+        anchor_plate_id=model["anchor_plate_id"],
+        merge_paleo_bathymetry_filename_format=os.path.join(
+            paleobath_dir, "paleobathymetry_${time}Ma.nc"
+        ),
+        merge_paleo_bathymetry_file_decimal_places_in_time=0,
+        merge_paleo_bathymetry_is_positive_below_sea_level=False,
+        output_positive_bathymetry_below_sea_level=False,
+        output_file_decimal_places_in_time=0,
+        use_all_cpus=cfg["run"].get("num_cpus", False),
+    )
+    log("STEP 5 done -> {}".format(pybacktrack_dir))
+
+
+# =============================================================================
 # Driver
 # =============================================================================
 
 def main():
     parser = argparse.ArgumentParser(
         description="Streamlined paleobathymetry workflow (age -> depth -> "
-                    "distance -> sediment thickness -> paleobathymetry).")
+                    "distance -> sediment thickness -> paleobathymetry -> "
+                    "pyBacktrack merge).")
     parser.add_argument("config", help="Path to the YAML configuration file.")
     args = parser.parse_args()
 
@@ -743,6 +818,7 @@ def main():
     distance_dir = os.path.join(out_root, "Distances")
     sedthick_dir = os.path.join(out_root, "SedimentThickness")
     paleobath_dir = os.path.join(out_root, "Paleobathymetry")
+    pybacktrack_dir = os.path.join(out_root, "PaleobathymetryPyBacktrack")
     os.makedirs(out_root, exist_ok=True)
 
     steps = cfg["run"].get("steps", {}) or {}
@@ -757,6 +833,8 @@ def main():
         step_sediment_thickness(cfg, model, times, distance_dir, sedthick_dir)
     if steps.get("paleobathymetry", True):
         step_paleobathymetry(cfg, times, sedthick_dir, basement_dir, paleobath_dir)
+    if steps.get("pybacktrack", True):
+        step_pybacktrack(cfg, model, times, paleobath_dir, pybacktrack_dir)
 
     log("All requested steps complete. Outputs in '{}'.".format(out_root))
 

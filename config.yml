@@ -32,6 +32,7 @@ plate_model:
     rotation_files: []           #   e.g. [model/rotations.rot]
     topology_files: []           #   e.g. [model/topologies.gpml]
     coastline_files: []          #   used as continent obstacles (optional)
+    static_polygon_files: []     #   e.g. [model/static_polygons.gpml] (required by Step 5 / pyBacktrack)
     # NOTE: the passive-margin proximity target (COB line segments) is set under
     # `proximity:` below, NOT here -- it is independent of the plate model.
 
@@ -211,3 +212,4 @@ run:
     distance_grids: true
     sediment_thickness: true
     paleobathymetry: true
+    pybacktrack: true     # step 5: pyBacktrack paleobathymetry merged with step-4 grids
