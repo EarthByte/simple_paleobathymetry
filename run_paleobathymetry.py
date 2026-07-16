@@ -385,10 +385,16 @@ def _resolve_proximity_and_obstacles(cfg, model):
         cc = prox.get("continent_contouring", {}) or {}
         pm_feat = cc.get("passive_margin_features")
         cc_feat = cc.get("continent_contour_features")
+        # If the paths aren't given explicitly but the (optional) generation step
+        # is enabled, use the files it writes (see generate_continent_contours.py).
+        if not pm_feat and (cc.get("generate", {}) or {}).get("enabled", False):
+            import generate_continent_contours as _gcc
+            pm_feat, cc_feat = _gcc.aggregated_feature_paths(cfg)
         if not pm_feat:
             raise ValueError(
                 "proximity.use_continent_contouring is true but "
-                "continent_contouring.passive_margin_features is not set."
+                "continent_contouring.passive_margin_features is not set "
+                "(and continent_contouring.generate.enabled is not true)."
             )
         proximity_files = [pm_feat]
         obstacle_files = [cc_feat] if (prox.get("use_continent_obstacles", True) and cc_feat) else None
@@ -415,6 +421,40 @@ def _resolve_proximity_and_obstacles(cfg, model):
 
     pbo = prox.get("plate_boundary_obstacles", ["MidOceanRidge", "SubductionZone"])
     return proximity_files, obstacle_files, pbo
+
+
+def maybe_generate_continent_contours(cfg):
+    """OPTIONAL pre-step: dynamically contour continents to build the passive-
+    margin / contour feature files, when continent contouring is switched on and
+    its `generate` block is enabled.
+
+    Runs only when:
+        proximity.use_continent_contouring: true
+        proximity.continent_contouring.generate.enabled: true
+    Skips (re)generation if the aggregated files already exist, unless
+    generate.force is true. The contouring engine itself lives in gplately
+    (gplately.ptt.continent_contours); this only orchestrates it -- see
+    generate_continent_contours.py.
+    """
+    prox = cfg["proximity"]
+    if not prox.get("use_continent_contouring", False):
+        return
+    cc = prox.get("continent_contouring", {}) or {}
+    gen = cc.get("generate", {}) or {}
+    if not gen.get("enabled", False):
+        return  # user is supplying pre-made passive_margin/contour files
+
+    import generate_continent_contours as gcc
+    passive_path, contour_path = gcc.aggregated_feature_paths(cfg)
+    if (not gen.get("force", False)
+            and os.path.isfile(passive_path) and os.path.isfile(contour_path)):
+        log("Continent contours already present ({} , {}); skipping generation "
+            "(set proximity.continent_contouring.generate.force: true to rebuild)."
+            .format(passive_path, contour_path))
+        return
+    log("Continent contouring enabled: generating passive-margin / contour "
+        "features (via gplately) ...")
+    gcc.generate_contours(cfg, log=log)
 
 
 def _check_cob_line_segments(proximity_files):
@@ -705,6 +745,7 @@ def main():
     if steps.get("age_to_depth", True):
         step_age_to_depth(cfg, model, times, basement_dir)
     if steps.get("distance_grids", True):
+        maybe_generate_continent_contours(cfg)
         step_distance_grids(cfg, model, times, distance_dir)
     if steps.get("sediment_thickness", True):
         step_sediment_thickness(cfg, model, times, distance_dir, sedthick_dir)

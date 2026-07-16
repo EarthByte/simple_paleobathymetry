@@ -246,26 +246,56 @@ model). As a safeguard, the workflow inspects the proximity features at run time
 and **warns if it finds polygons** rather than line segments.
 
 Continent contouring is **off by default**, so no extra preprocessing is needed.
-Alternatively, you can turn it **on** and supply dynamically **contoured**
-passive margins produced by the separate EarthByte
+
+**Optional: dynamically contoured passive margins.** Instead of the static COB
+line segments, you can have the workflow trace passive margins *at each time
+step* by contouring the reconstructed continental crust. This is the in-workflow
+equivalent of EarthByte's separate
 [continent-contouring](https://github.com/EarthByte/continent-contouring)
-workflow (set `proximity.use_continent_contouring: true` and point the config at
-its outputs).
+workflow — in fact the contouring engine it uses **is gplately's**
+(`gplately.ptt.continent_contours`), which you already have installed. The
+workflow drives that engine and then splits each continent contour into
+**passive** vs **active** margin segments (a segment near a subduction zone is
+active; everything else is passive), exactly as EarthByte's
+`create_passive_margins.py` does. To switch it on:
+
+```yaml
+proximity:
+  use_continent_contouring: true
+  continent_contouring:
+    generate:
+      enabled: true
+      continent_polygon_files: [plate_model/continental_polygons.gpml]
+      # point_spacing_degrees, area_threshold_square_kms, buffer_and_gap_distance_kms,
+      # max_distance_of_subduction_from_active_margin_kms ... (see config.yml)
+```
+
+When enabled, generation runs **automatically before the distance step** (via
+`generate_continent_contours.py`) and writes, into
+`continent_contouring.output_dir` (default `output/ContinentContours/`):
+
+```
+continent_contour_features_<t>.gpml   passive_margin_features_<t>.gpml   continent_mask_<t>.nc
+continent_contour_features.gpmlz      passive_margin_features.gpmlz   (aggregated, used by Step 2)
+```
+
+The aggregated `passive_margin_features.gpmlz` becomes the proximity target and
+`continent_contour_features.gpmlz` the continent obstacle — the two
+`continent_contouring` paths are filled in for you. Existing outputs are reused
+unless you set `generate.force: true`. You can also run it as a standalone
+pre-step (`python generate_continent_contours.py config.yml`), or skip generation
+entirely and point `passive_margin_features` / `continent_contour_features` at
+files you already have (leave `generate.enabled: false`).
 
 > **Deep time (beyond ~250 Ma).** The shipped COB line-segment dataset is a
 > *present-day* set reconstructed with the plate model, and it represents
 > **Mesozoic–Cenozoic** passive margins. For older reconstructions (pre-Pangea
 > breakup) it no longer captures the passive margins that existed then, so
 > distances would be measured to the wrong boundaries. For deep-time
-> paleobathymetry you should **switch continent contouring on**: it identifies
-> passive-margin segments *dynamically at each time step* (contour the
-> reconstructed continental crust, then remove segments near subduction zones)
-> and produces a suitable time-dependent proximity file. Run the EarthByte
-> [continent-contouring](https://github.com/EarthByte/continent-contouring)
-> workflow, set `proximity.use_continent_contouring: true`, and point
-> `continent_contouring.passive_margin_features` / `continent_contour_features`
-> at its outputs. The workflow prints a reminder if you request times beyond
-> ~250 Ma with contouring still off.
+> paleobathymetry you should **switch continent contouring on** (as above): it
+> identifies passive-margin segments *dynamically at each time step* and produces
+> a suitable time-dependent proximity file. The workflow prints a reminder if you
+> request times beyond ~250 Ma with contouring still off.
 
 ### Step 3 — Predicted sediment thickness
 
@@ -435,7 +465,8 @@ output/
 ├── BasementDepth/       basement_depth_<t>Ma.nc           (Step 1)
 ├── Distances/           mean_distance_<spacing>d_<t>.nc   (Step 2)
 ├── SedimentThickness/   sediment_thickness_<t>Ma.nc       (Step 3)
-└── Paleobathymetry/     paleobathymetry_<t>Ma.nc          (Step 4)  ← final product
+├── Paleobathymetry/     paleobathymetry_<t>Ma.nc          (Step 4)  ← final product
+└── ContinentContours/   passive_margin_features.gpmlz     (only if continent contouring is on)
 ```
 
 ### Continental masking (on by default)

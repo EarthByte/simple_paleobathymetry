@@ -58,8 +58,10 @@ proximity:
   #
   # DEFAULT (false): measure distance to the COB LINE SEGMENTS in the file below.
   #   Appropriate for Mesozoic-Cenozoic times (see the deep-time note below).
-  # true: use dynamically contoured passive margins instead (you must first run
-  #   the EarthByte continent-contouring workflow and point to its outputs below).
+  # true: use dynamically contoured passive margins instead. The workflow can
+  #   generate them for you (set continent_contouring.generate.enabled: true and
+  #   list the continental polygons to contour), or you can point the two
+  #   continent_contouring paths at files you already have.
   #   REQUIRED for deep time (beyond ~250 Ma): the shipped present-day COB line
   #   segments do not capture pre-Pangea passive margins, so contouring is used to
   #   identify passive-margin segments dynamically at each time step.
@@ -82,8 +84,33 @@ proximity:
   cob_line_segments: data/Global_EarthByte_GPlates_PresentDay_COBs.gpmlz
 
   continent_contouring:                # only used when use_continent_contouring: true
+    # (a) Point at passive-margin / contour feature files you already have ...
     passive_margin_features: null      # -> proximity target
     continent_contour_features: null   # -> continent obstacle
+    output_dir: null                   # where generated files go (default: output/ContinentContours)
+
+    # ... OR (b) let the workflow generate them, by dynamically contouring
+    # continents through time. The contouring engine itself is gplately's
+    # (gplately.ptt.continent_contours) -- this just drives it and splits each
+    # contour into passive vs active (near-subduction) margin segments, exactly
+    # as EarthByte's continent-contouring `create_passive_margins.py` does. When
+    # enabled, generation runs automatically before the distance step (Step 2),
+    # and the two paths above are filled in from output_dir. Requires gplately.
+    generate:
+      enabled: false
+      force: false                     # true = rebuild even if outputs already exist
+      # Continental polygons to contour (the continents whose margins we trace).
+      # Use your plate model's continental polygons (NOT COB line segments).
+      continent_polygon_files: []      # e.g. [plate_model/continental_polygons.gpml]
+      # Contouring resolution and thresholds (EarthByte defaults shown):
+      point_spacing_degrees: 0.25
+      area_threshold_square_kms: 100000            # ignore continent blobs smaller than this
+      buffer_and_gap_distance_kms: 0               # expand/merge nearby continents
+      exclusion_area_threshold_square_kms: 0       # drop enclosed gaps smaller than this
+      separation_distance_threshold_radians: .inf  # merge continents closer than this
+      # A contour segment within this distance of a subduction zone is an ACTIVE
+      # margin; everything else is a passive margin (the proximity target).
+      max_distance_of_subduction_from_active_margin_kms: 500
 
   # true  : shortest-path distance that routes AROUND continents (water flow).
   # false : straight-line great-circle distance to the passive margins.
